@@ -1,0 +1,13 @@
+# Artefacts de compilation CMake
+/build/
+/build-*/
+
+# Donnees SWARFARM generees par tools/swarfarm_sync
+/data/swarfarm/*.json
+/data/swarfarm/*.json.tmp
+
+# Fichiers locaux des IDE et outils
+.vs/
+.vscode/
+compile_commands.json
+CMakeUserPresets.json

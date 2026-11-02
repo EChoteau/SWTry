@@ -1,0 +1,26 @@
+[
+  {
+    "id": 999,
+    "com2us_id": 12302,
+    "name": "Forest Keeper",
+    "element": "Fire",
+    "natural_stars": 1,
+    "base_stars": 1,
+    "awaken_level": 0,
+    "can_awaken": false,
+    "family_id": 12300,
+    "base_hp": 1170,
+    "base_attack": 66,
+    "base_defense": 96,
+    "speed": 88,
+    "crit_rate": 15,
+    "crit_damage": 50,
+    "resistance": 15,
+    "accuracy": 0,
+    "max_lvl_hp": 6420,
+    "max_lvl_attack": 362,
+    "max_lvl_defense": 527,
+    "skills": [4],
+    "leader_skill": null
+  }
+]
