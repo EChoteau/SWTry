@@ -1,0 +1,13 @@
+{
+  "craft_min_level": 12,
+  "grindstones": {
+    "default": { "rarity": 5, "roll": "max" },
+    "stats": {
+      "2": { "roll": "min" },
+      "4": { "rarity": 5, "roll": "max" },
+      "8": { "rarity": 4, "roll": 3 },
+      "9": { "rarity": 5, "roll": "max" }
+    },
+    "max_new_grinds": 2
+  }
+}

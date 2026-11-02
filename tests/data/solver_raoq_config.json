@@ -4,7 +4,8 @@
     "locked_unit_ids": [],
     "inventory_only": false,
     "minimum_rune_level": 12,
-    "minimum_stars": 6
+    "minimum_stars": 6,
+    "projection_level": "current"
   },
   "scenarios": [
     {

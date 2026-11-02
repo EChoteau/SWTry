@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <utility>
 
@@ -28,6 +29,25 @@ T read(const json& object, const char* field, T fallback,
         warn(warnings, std::string("ReferenceDB: invalid field '") + field +
                           "': " + error.what());
         return fallback;
+    }
+}
+
+// Stat optionnelle : null => absente sans avertissement (recensée par la base) ;
+// champ manquant ou invalide => absente avec avertissement.
+std::optional<int> read_optional_stat(const json& object, const char* field,
+                                      const WarningSink& warnings) {
+    const auto it = object.find(field);
+    if (it == object.end()) {
+        warn(warnings, std::string("ReferenceDB: missing field '") + field + "'");
+        return std::nullopt;
+    }
+    if (it->is_null()) return std::nullopt;
+    try {
+        return it->get<int>();
+    } catch (const json::exception& error) {
+        warn(warnings, std::string("ReferenceDB: invalid field '") + field +
+                          "': " + error.what());
+        return std::nullopt;
     }
 }
 
@@ -110,17 +130,18 @@ ReferenceMonster parse_monster(const json& object, const WarningSink& warnings) 
     monster.awaken_level = read<int>(object, "awaken_level", 0, warnings);
     monster.can_awaken = read<bool>(object, "can_awaken", false, warnings);
     monster.family_id = read<int>(object, "family_id", 0, warnings);
-    monster.base_hp = read<int>(object, "base_hp", 0, warnings);
-    monster.base_attack = read<int>(object, "base_attack", 0, warnings);
-    monster.base_defense = read<int>(object, "base_defense", 0, warnings);
+    monster.base_hp = read_optional_stat(object, "base_hp", warnings);
+    monster.base_attack = read_optional_stat(object, "base_attack", warnings);
+    monster.base_defense = read_optional_stat(object, "base_defense", warnings);
     monster.speed = read<int>(object, "speed", 0, warnings);
     monster.crit_rate = read<int>(object, "crit_rate", 0, warnings);
     monster.crit_damage = read<int>(object, "crit_damage", 0, warnings);
     monster.resistance = read<int>(object, "resistance", 0, warnings);
     monster.accuracy = read<int>(object, "accuracy", 0, warnings);
-    monster.max_lvl_hp = read<int>(object, "max_lvl_hp", 0, warnings);
-    monster.max_lvl_attack = read<int>(object, "max_lvl_attack", 0, warnings);
-    monster.max_lvl_defense = read<int>(object, "max_lvl_defense", 0, warnings);
+    monster.max_lvl_hp = read_optional_stat(object, "max_lvl_hp", warnings);
+    monster.max_lvl_attack = read_optional_stat(object, "max_lvl_attack", warnings);
+    monster.max_lvl_defense =
+        read_optional_stat(object, "max_lvl_defense", warnings);
     monster.skills = parse_skills(object, warnings);
     monster.leader_skill = parse_leader_skill(object, warnings);
     return monster;
@@ -159,10 +180,19 @@ ReferenceDB ReferenceDB::load(const std::filesystem::path& path,
             warn(warnings, "ReferenceDB: ignored entry without valid com2us_id");
             continue;
         }
-        if (!database.monsters_.emplace(monster.com2us_id, std::move(monster)).second)
+        const int id = monster.com2us_id;
+        const bool complete = monster.has_stats();
+        if (!database.monsters_.emplace(id, std::move(monster)).second)
             warn(warnings, "ReferenceDB: duplicate com2us_id");
+        else if (!complete)
+            database.without_stats_.push_back(id);
     }
+    std::sort(database.without_stats_.begin(), database.without_stats_.end());
     return database;
+}
+
+const std::vector<int>& ReferenceDB::monsters_without_stats() const noexcept {
+    return without_stats_;
 }
 
 const ReferenceMonster* ReferenceDB::find(int com2us_id) const {

@@ -1,5 +1,7 @@
 #include "swcore/solver_config.hpp"
 
+#include "swcore/craft_audit.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <fstream>
@@ -57,11 +59,6 @@ std::optional<int> read_id_or_name(const json& value,
     return std::nullopt;
 }
 
-bool is_allowed_grindstone_stat(int stat_id) {
-    return stat_id == 1 || stat_id == 2 || stat_id == 3 || stat_id == 4 ||
-           stat_id == 5 || stat_id == 6 || stat_id == 8;
-}
-
 std::optional<json> read_json(const std::filesystem::path& path,
                               const WarningSink& warnings) {
     std::ifstream input(path);
@@ -95,11 +92,98 @@ bool read(const json& object, const char* field, T& result,
     }
 }
 
-std::optional<GrindstoneMode> parse_grindstone_mode(const std::string& value) {
-    if (value == "off") return GrindstoneMode::Off;
-    if (value == "min") return GrindstoneMode::Min;
-    if (value == "max") return GrindstoneMode::Max;
-    return std::nullopt;
+// Une règle {"rarity": R, "roll": "min" | "max" | N} ("mode" accepté comme
+// ancien nom de "roll") ; les champs absents viennent de "default".
+std::optional<GrindstoneRule> parse_craft_rule(const json& entry,
+                                               const std::optional<GrindstoneRule>& fallback,
+                                               const WarningSink& warnings) {
+    if (!entry.is_object()) return std::nullopt;
+    GrindstoneRule rule = fallback.value_or(GrindstoneRule{});
+    read(entry, "rarity", rule.rarity, warnings);
+    auto roll = entry.find("roll");
+    if (roll == entry.end()) roll = entry.find("mode");
+    if (roll != entry.end()) {
+        if (roll->is_number_integer()) {
+            rule.mode = GrindstoneMode::Exact;
+            rule.exact = roll->get<int>();
+        } else if (roll->is_string()) {
+            const auto text = roll->get<std::string>();
+            if (text == "min") rule.mode = GrindstoneMode::Min;
+            else if (text == "max") rule.mode = GrindstoneMode::Max;
+            else if (text == "off") rule.mode = GrindstoneMode::Off;
+            else {
+                warn(warnings, "SolverConfig: unknown roll '" + text + "'");
+                return std::nullopt;
+            }
+        }
+    }
+    if (rule.mode == GrindstoneMode::Off && !fallback && roll == entry.end())
+        return std::nullopt;
+    return rule;
+}
+
+// "default" / "stats" -> règles par stat. Stats non autorisées (meules : hors
+// 1-6 et 8 ; gemmes : absentes de enchanted_gem.json) ignorées avec un seul
+// avertissement ; valeur exacte hors plage = erreur.
+void load_craft_rules(const json& section, const CraftRanges& ranges,
+                      const std::string& kind, bool (*allowed)(int, const CraftRanges&),
+                      const std::string& allowed_text,
+                      std::map<int, GrindstoneRule>& rules,
+                      std::vector<std::string>& errors,
+                      const WarningSink& warnings) {
+    std::optional<GrindstoneRule> fallback;
+    if (const auto entry = section.find("default"); entry != section.end())
+        fallback = parse_craft_rule(*entry, std::nullopt, warnings);
+
+    std::vector<std::pair<int, GrindstoneRule>> wanted;
+    std::vector<std::string> ignored;
+    if (const auto stats = section.find("stats");
+        stats != section.end() && stats->is_object()) {
+        for (const auto& [id_text, value] : stats->items()) {
+            try {
+                const int stat_id = std::stoi(id_text);
+                if (!allowed(stat_id, ranges)) {
+                    ignored.push_back(id_text);
+                    continue;
+                }
+                const auto rule = parse_craft_rule(value, fallback, warnings);
+                if (rule) wanted.emplace_back(stat_id, *rule);
+            } catch (const std::exception& error) {
+                warn(warnings, "SolverConfig: invalid " + kind + " stat '" +
+                                   id_text + "': " + error.what());
+            }
+        }
+    } else if (fallback) {
+        for (const auto& [stat_id, by_rarity] : ranges)
+            if (allowed(stat_id, ranges)) wanted.emplace_back(stat_id, *fallback);
+    }
+    if (!ignored.empty()) {
+        std::string list;
+        for (const auto& id : ignored) list += (list.empty() ? "" : ", ") + id;
+        warn(warnings, "SolverConfig: " + kind + " stat ignored (" + allowed_text +
+                           "): " + list);
+    }
+    for (const auto& [stat_id, rule] : wanted) {
+        if (rule.mode == GrindstoneMode::Off) continue;
+        const auto stat = ranges.find(stat_id);
+        if (stat == ranges.end() || !stat->second.contains(rule.rarity)) {
+            warn(warnings, "SolverConfig: unsupported " + kind + " rarity " +
+                               std::to_string(rule.rarity) + " for stat " +
+                               std::to_string(stat_id));
+            continue;
+        }
+        const auto [low, high] = stat->second.at(rule.rarity);
+        if (rule.mode == GrindstoneMode::Exact &&
+            (rule.exact < low || rule.exact > high)) {
+            errors.push_back(kind + " : valeur " + std::to_string(rule.exact) +
+                             " hors de [" + std::to_string(low) + ", " +
+                             std::to_string(high) + "] pour la stat " +
+                             std::to_string(stat_id) + " (rareté " +
+                             std::to_string(rule.rarity) + ")");
+            continue;
+        }
+        rules[stat_id] = rule;
+    }
 }
 
 void load_mainstat_ids(const std::filesystem::path& path,
@@ -122,28 +206,6 @@ void load_mainstat_ids(const std::filesystem::path& path,
     }
 }
 
-void load_grindstone_ranges(const std::filesystem::path& path,
-                            std::map<int, std::set<int>>& ranges,
-                            const WarningSink& warnings) {
-    const auto root = read_json(path, warnings);
-    if (!root || !root->is_object()) return;
-    for (const auto& [id_text, value] : root->items()) {
-        try {
-            const int stat_id = std::stoi(id_text);
-            const auto range = value.find("range");
-            if (range == value.end() || !range->is_object()) continue;
-            for (const auto& [rarity, bounds] : range->items()) {
-                if (bounds.is_object() && bounds.contains("min") &&
-                    bounds.contains("max"))
-                    ranges[stat_id].insert(std::stoi(rarity));
-            }
-        } catch (const std::exception& error) {
-            warn(warnings, "SolverConfig: invalid grindstone mapping entry '" +
-                               id_text + "': " + error.what());
-        }
-    }
-}
-
 }  // namespace
 
 SolverConfig SolverConfig::load(const std::filesystem::path& path,
@@ -162,6 +224,19 @@ SolverConfig SolverConfig::load(const std::filesystem::path& path,
         read(*pool, "minimum_rune_level", config.pool.minimum_rune_level,
              warnings);
         read(*pool, "minimum_stars", config.pool.minimum_stars, warnings);
+        if (const auto projection = pool->find("projection_level");
+            projection != pool->end()) {
+            if (projection->is_string() &&
+                projection->get<std::string>() == "current")
+                config.pool.projection_level = kProjectionCurrent;
+            else if (projection->is_number_integer() &&
+                     (projection->get<int>() == 12 || projection->get<int>() == 15))
+                config.pool.projection_level = projection->get<int>();
+            else
+                warn(warnings, "SolverConfig: projection_level must be "
+                               "\"current\", 12 or 15; keeping " +
+                                   std::to_string(config.pool.projection_level));
+        }
         if (const auto locked = pool->find("locked_unit_ids");
             locked != pool->end() && locked->is_array()) {
             for (const auto& value : *locked) {
@@ -273,53 +348,33 @@ SolverConfig SolverConfig::load(const std::filesystem::path& path,
         }
     }
 
+    read(*root, "craft_min_level", config.craft_min_level, warnings);
     if (const auto grindstones = root->find("grindstones");
-        grindstones != root->end() && grindstones->is_object()) {
-        std::map<int, std::set<int>> known_grindstones;
-        load_grindstone_ranges(mapping_directory / "grindstone.json",
-                               known_grindstones, warnings);
-        read(*grindstones, "allow_extended_stats",
-             config.allow_extended_grindstone_stats, warnings);
-        if (const auto rules = grindstones->find("stats");
-            rules != grindstones->end() && rules->is_object()) {
-            for (const auto& [id_text, value] : rules->items()) {
-                try {
-                    const int stat_id = std::stoi(id_text);
-                    if (!config.allow_extended_grindstone_stats &&
-                        !is_allowed_grindstone_stat(stat_id)) {
-                        warn(warnings, "SolverConfig: grindstone stat ignored: " +
-                                           id_text);
-                        continue;
-                    }
-                    if (!known_grindstones.contains(stat_id)) {
-                        warn(warnings, "SolverConfig: unknown grindstone stat: " +
-                                           id_text);
-                        continue;
-                    }
-                    GrindstoneRule rule;
-                    std::string mode;
-                    if (!value.is_object() ||
-                        !read(value, "mode", mode, warnings) ||
-                        !read(value, "rarity", rule.rarity, warnings)) continue;
-                    const auto parsed = parse_grindstone_mode(mode);
-                    if (!parsed) {
-                        warn(warnings, "SolverConfig: unknown grindstone mode: " + mode);
-                        continue;
-                    }
-                    if (!known_grindstones[stat_id].contains(rule.rarity)) {
-                        warn(warnings, "SolverConfig: unsupported grindstone rarity " +
-                                           std::to_string(rule.rarity) + " for stat " +
-                                           id_text);
-                        continue;
-                    }
-                    rule.mode = *parsed;
-                    config.grindstones.emplace(stat_id, rule);
-                } catch (const std::exception& error) {
-                    warn(warnings, "SolverConfig: invalid grindstone stat '" +
-                                       id_text + "': " + error.what());
-                }
-            }
-        }
+        grindstones != root->end() && grindstones->is_object() &&
+        !grindstones->empty()) {
+        const auto ranges =
+            load_craft_ranges(mapping_directory / "grindstone.json", warnings);
+        load_craft_rules(
+            *grindstones, ranges, "grindstone",
+            [](int stat, const CraftRanges&) { return is_grindable_stat(stat); },
+            "only 1-6 and 8 can be ground", config.grindstones, config.errors,
+            warnings);
+        if (const auto limit = grindstones->find("max_new_grinds");
+            limit != grindstones->end() && limit->is_number_integer())
+            config.max_new_grinds = limit->get<int>();
+    }
+    if (const auto gems = root->find("gems");
+        gems != root->end() && gems->is_object() && !gems->empty()) {
+        const auto ranges =
+            load_craft_ranges(mapping_directory / "enchanted_gem.json", warnings);
+        load_craft_rules(
+            *gems, ranges, "gem",
+            [](int stat, const CraftRanges& known) { return known.contains(stat); },
+            "no range in enchanted_gem.json", config.gems, config.errors, warnings);
+        if (const auto limit = gems->find("max_new_gems");
+            limit != gems->end() && limit->is_number_integer())
+            config.max_new_gems = limit->get<int>();
+        read(*gems, "regem_existing", config.gem_regem_existing, warnings);
     }
 
     if (const auto objective = root->find("objective");
@@ -350,6 +405,14 @@ SolverConfig SolverConfig::load(const std::filesystem::path& path,
              config.limits.max_builds_per_scenario, warnings);
         read(*limits, "one_build_per_set_composition",
              config.limits.one_build_per_set_composition, warnings);
+        read(*limits, "max_results", config.limits.max_results, warnings);
+        if (const auto min_score = limits->find("min_score");
+            min_score != limits->end() && min_score->is_number())
+            config.limits.min_score = min_score->get<double>();
+        if (config.limits.top_n < 0) {
+            warn(warnings, "SolverConfig: top_n must be >= 0; using 0 (all builds)");
+            config.limits.top_n = 0;
+        }
     }
 
     return config;

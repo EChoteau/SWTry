@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace swcore {
@@ -33,8 +34,12 @@ struct StatReport {
 };
 
 struct RuneView {
-    Rune rune;
-    double efficiency = 0;
+    Rune rune;              // rune réelle (en jeu)
+    double efficiency = 0;  // efficacité réelle
+    // Modifications simulées (meules, gemme) et efficacité après simulation.
+    std::vector<AppliedGrindstone> grinds;
+    std::vector<AppliedGem> gems;
+    std::optional<double> simulated_efficiency;
 };
 
 struct BuildReport {
@@ -44,6 +49,10 @@ struct BuildReport {
     std::string scenario;
     int rank = 0;
     double score = 0;
+    // Niveau de projection utilisé si au moins une rune du build a été projetée
+    // (0 sinon). Les stats sont projetées ; les runes affichées sont réelles.
+    int projection_level = 0;
+    bool simulated_craft = false;  // stats incluant des meules/gemmes simulées
     std::array<StatReport, 8> stats{};
     DerivedMetrics metrics;
     std::array<RuneView, 6> runes{};
@@ -51,11 +60,29 @@ struct BuildReport {
 };
 
 struct SolverBuild {
-    std::array<Rune, 6> runes{};
+    std::array<Rune, 6> runes{};         // runes utilisées pour le calcul (projetées)
+    std::array<Rune, 6> actual_runes{};  // runes réelles (affichage, en jeu)
     StatBlock stats;
     DerivedMetrics metrics;
     double score = 0;
+    double efficiency = 0;  // efficacité moyenne du build (tie-break)
+    int grind_cost = 0;     // nouvelles meules simulées (tie-break : moins = mieux)
+    int gem_cost = 0;       // nouvelles gemmes simulées (tie-break : moins = mieux)
+    int projection_level = 0;  // > 0 si au moins une rune a été projetée
     std::string scenario;
+};
+
+// Build valide sous forme compacte (mode top_n = 0) : ids de runes par slot et
+// variante de meules de chaque rune.
+struct CompactBuild {
+    std::array<std::uint64_t, 6> rune_ids{};
+    std::array<int, 6> variants{};
+    StatValues total;
+    double score = 0;
+    double effective_hp = 0;
+    double efficiency = 0;
+    int grind_cost = 0;
+    int gem_cost = 0;
 };
 
 struct ScenarioReport {
@@ -66,6 +93,11 @@ struct ScenarioReport {
     std::size_t candidates_after = 0;
     std::uint64_t raw_combinations = 0;
     std::int64_t elapsed_ms = 0;
+    // Coupes de la recherche, par cause (branches abandonnées sans être explorées).
+    std::uint64_t cuts_sets = 0;
+    std::uint64_t cuts_objective = 0;
+    std::uint64_t cuts_constraints = 0;
+    std::uint64_t cuts_craft_budget = 0;  // max_new_grinds dépassé
     struct SlotFilter {
         std::size_t pool = 0;
         std::size_t inventory = 0;
@@ -79,6 +111,15 @@ struct ScenarioReport {
     };
     std::array<SlotFilter, 6> slot_filters{};
     std::map<std::string, double> best_constraint_values;
+    // Valeur maximale théorique de chaque contrainte minimale avec ce pool
+    // (borne supérieure, chaque slot pris au mieux indépendamment).
+    std::map<std::string, double> constraint_upper_bounds;
+    // Mode top_n = 0 : tous les builds valides triés, leur nombre, et le
+    // drapeau de plafond (limits.max_results atteint).
+    bool all_builds_mode = false;
+    std::vector<CompactBuild> all_builds;
+    std::uint64_t valid_builds = 0;
+    bool truncated = false;
     bool incomplete = false;
     std::string validation_error;
 };
@@ -87,6 +128,23 @@ struct SolverReport {
     std::vector<ScenarioReport> scenarios;
     std::vector<std::string> limiting_constraints;
 };
+
+// Variante de craft d'une rune (meules et/ou gemme simulées) et ses coûts.
+struct RuneCraftVariant {
+    Rune rune;
+    int grinds = 0;
+    int gems = 0;
+};
+
+// Toutes les variantes de craft d'une rune selon la config (avant dominance),
+// la rune telle quelle en premier. Pour vérification et diagnostic.
+std::vector<RuneCraftVariant> list_craft_variants(
+    const Rune& rune, const SolverConfig& config,
+    const std::filesystem::path& mapping_directory);
+
+// Nombre de meilleurs builds conservés par scénario (top_n > 0) : top_n,
+// plafonné par max_builds_per_scenario.
+std::size_t kept_builds_limit(const SolverLimits& limits);
 
 BuildReport make_build_report(const AccountMonster& target,
                               const SolverBuild& build, int rank = 1);

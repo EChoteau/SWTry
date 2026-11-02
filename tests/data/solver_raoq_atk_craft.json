@@ -1,0 +1,47 @@
+{
+  "pool": {
+    "target_unit_id": 17858844162,
+    "locked_unit_ids": [],
+    "inventory_only": false,
+    "minimum_rune_level": 15,
+    "minimum_stars": 6
+  },
+  "scenarios": [
+    {
+      "name": "Fatal + Blade",
+      "sets": [
+        { "set_id": 8, "pieces": 4 },
+        { "set_id": 4, "pieces": 2 }
+      ]
+    }
+  ],
+  "main_stats": {
+    "2": [4],
+    "4": [10],
+    "6": [4]
+  },
+  "constraints": {
+    "speed": { "min": 170 },
+    "accuracy": { "min": 35 },
+    "crit_rate": { "min": 70 }
+  },
+  "craft_min_level": 12,
+  "grindstones": {
+    "default": { "rarity": 5, "roll": "max" },
+    "max_new_grinds": null
+  },
+  "gems": {
+    "default": { "rarity": 5, "roll": "max" },
+    "max_new_gems": null
+  },
+  "objective": {
+    "mode": "optimize",
+    "weights": {
+      "attack": 1.0
+    }
+  },
+  "limits": {
+    "top_n": 20,
+    "time_budget_ms": 60000
+  }
+}

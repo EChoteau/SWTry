@@ -1,0 +1,11 @@
+{
+  "gems": {
+    "default": { "rarity": 5, "roll": "max" },
+    "stats": {
+      "4": { "rarity": 5, "roll": "max" },
+      "9": { "roll": 7 },
+      "13": { "rarity": 5, "roll": "max" }
+    },
+    "max_new_gems": 2
+  }
+}

@@ -39,7 +39,8 @@ add_library(swcore STATIC
     src/swcore/solver_config.cpp
     src/swcore/solver.cpp
     src/swcore/account.cpp
-    src/swcore/account_bonuses.cpp)
+    src/swcore/account_bonuses.cpp
+    src/swcore/craft_audit.cpp)
 target_include_directories(swcore
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(swcore
@@ -58,8 +59,10 @@ if(MINGW)
     target_link_options(swsync PRIVATE -static)
 endif()
 
-include(CTest)
-if(BUILD_TESTING)
+# Option propre au projet : BUILD_TESTING est forcé à OFF par une dépendance (cpr).
+option(SW_BUILD_TESTS "Compiler les tests unitaires" ON)
+if(SW_BUILD_TESTS)
+    enable_testing()
     add_executable(tests
         tests/smoke_test.cpp
         tests/reference_db_test.cpp
@@ -70,7 +73,9 @@ if(BUILD_TESTING)
         tests/solver_test.cpp
         tests/account_test.cpp
         tests/mapping_resolution_test.cpp
-        tests/account_bonuses_test.cpp)
+        tests/account_bonuses_test.cpp
+        tests/craft_audit_test.cpp
+        tests/craft_verification_test.cpp)
     target_compile_definitions(tests PRIVATE
         SW_PROJECT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(tests PRIVATE swcore Catch2::Catch2WithMain project_warnings)

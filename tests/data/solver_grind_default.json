@@ -1,0 +1,6 @@
+{
+  "grindstones": {
+    "default": { "rarity": 5, "roll": "max" },
+    "max_new_grinds": null
+  }
+}

@@ -1,6 +1,7 @@
 # Artefacts de compilation CMake
 /build/
 /build-*/
+/Testing/Temporary/
 
 # Donnees SWARFARM generees par tools/swarfarm_sync
 /data/swarfarm/*.json

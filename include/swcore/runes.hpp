@@ -36,9 +36,26 @@ struct SecondaryStat {
     int grind = 0;
 };
 
+// Meule simulée sur une substat (index de ligne dans Rune::secondary).
 struct AppliedGrindstone {
     int stat_id = 0;
     int value = 0;
+    int previous = 0;  // meule déjà présente sur la ligne avant application
+    int rarity = 0;
+    int line = -1;
+};
+
+// Gemme simulée : la ligne `line` (état réel : old_*) devient stat_id/value,
+// enchantée.
+struct AppliedGem {
+    int line = -1;
+    int old_stat_id = 0;
+    int old_value = 0;
+    int old_grind = 0;
+    bool old_enchanted = false;
+    int stat_id = 0;
+    int value = 0;
+    int rarity = 0;
 };
 
 struct PlannedEnchantment {
@@ -68,6 +85,7 @@ struct Rune {
     std::uint64_t source_unit_id = 0;
     std::string source_name;
     std::vector<AppliedGrindstone> applied_grindstones;
+    std::vector<AppliedGem> applied_gems;
     std::vector<PlannedEnchantment> planned_enchantments;
 };
 
