@@ -11,9 +11,11 @@
 
 namespace swcore {
 
-enum class Stat {
+enum class StatType {
+    None,
     Unknown,
 };
+using Stat = StatType;
 
 enum class StatValueKind {
     Unknown,
@@ -22,7 +24,7 @@ enum class StatValueKind {
 };
 
 struct StatValue {
-    Stat stat = Stat::Unknown;
+    StatType stat = StatType::Unknown;
     StatValueKind kind = StatValueKind::Unknown;
     int stat_id = 0;
     int value = 0;
@@ -32,6 +34,16 @@ struct SecondaryStat {
     StatValue value;
     bool enchanted = false;
     int grind = 0;
+};
+
+struct AppliedGrindstone {
+    int stat_id = 0;
+    int value = 0;
+};
+
+struct PlannedEnchantment {
+    int stat_id = 0;
+    int value = 0;
 };
 
 enum class RuneOccupancy {
@@ -53,10 +65,15 @@ struct Rune {
     RuneOccupancy occupancy = RuneOccupancy::Unknown;
     std::uint64_t occupied_id = 0;
     int extra = 0;
+    std::uint64_t source_unit_id = 0;
+    std::string source_name;
+    std::vector<AppliedGrindstone> applied_grindstones;
+    std::vector<PlannedEnchantment> planned_enchantments;
 };
 
 struct RuneMapping {
     std::unordered_map<int, std::string> stat_names;
+    std::unordered_map<int, StatValueKind> stat_kinds;
     std::unordered_map<int, std::string> set_names;
 
     static RuneMapping load(const std::filesystem::path& path,

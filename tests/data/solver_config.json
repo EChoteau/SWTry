@@ -1,0 +1,43 @@
+{
+  "pool": {
+    "target_unit_id": 17858844162,
+    "locked_unit_ids": [123456],
+    "inventory_only": false,
+    "minimum_rune_level": 12,
+    "minimum_stars": 5
+  },
+  "scenarios": [
+    {"name": "Rage+Blade", "sets": [{"set_id": 5, "pieces": 4}, {"set_id": 4, "pieces": 2}]},
+    {"name": "any", "any_set": true}
+  ],
+  "main_stats": {
+    "2": [8, 9],
+    "4": "all",
+    "6": [2, 4, 6, 8, 9, 10, 11, 12]
+  },
+  "constraints": {
+    "hp": {"min": 15000},
+    "crit_rate": {"min": 85, "max": 100},
+    "effective_hp": {"min": 20000}
+  },
+  "grindstones": {
+    "allow_extended_stats": false,
+    "stats": {
+      "1": {"mode": "max", "rarity": 5},
+      "9": {"mode": "max", "rarity": 5}
+    }
+  },
+  "objective": {
+    "mode": "explore",
+    "weights": {"hp": 1.0, "speed": 2.0},
+    "caps": {"crit_rate": 100},
+    "sort_metrics": ["crit_damage", "speed"]
+  },
+  "limits": {
+    "top_n": 50,
+    "time_budget_ms": 1000,
+    "node_limit": 100000,
+    "max_builds_per_scenario": 20,
+    "one_build_per_set_composition": true
+  }
+}

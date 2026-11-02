@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Un seul dossier build/ et un seul mode : Release (même si -DCMAKE_BUILD_TYPE=... est passé)
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Type de build (Release uniquement)" FORCE)
+set(CMAKE_CONFIGURATION_TYPES Release CACHE STRING "Configurations (Release uniquement)" FORCE)
+
 # Tout en statique : un seul .exe, aucune DLL à côté
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
@@ -31,6 +35,9 @@ add_library(swcore STATIC
     src/swcore/reference_db.cpp
     src/swcore/storage_stacks.cpp
     src/swcore/runes.cpp
+    src/swcore/set_effects.cpp
+    src/swcore/solver_config.cpp
+    src/swcore/solver.cpp
     src/swcore/account.cpp
     src/swcore/account_bonuses.cpp)
 target_include_directories(swcore
@@ -58,6 +65,9 @@ if(BUILD_TESTING)
         tests/reference_db_test.cpp
         tests/storage_stacks_test.cpp
         tests/runes_test.cpp
+        tests/set_effects_test.cpp
+        tests/solver_config_test.cpp
+        tests/solver_test.cpp
         tests/account_test.cpp
         tests/mapping_resolution_test.cpp
         tests/account_bonuses_test.cpp)

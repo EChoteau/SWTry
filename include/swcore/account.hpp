@@ -1,6 +1,7 @@
 #pragma once
 
 #include "swcore/runes.hpp"
+#include "swcore/set_effects.hpp"
 
 #include <array>
 #include <cstdint>
@@ -38,6 +39,7 @@ struct AccountMonster {
     int crit_damage = 0;
     std::vector<Rune> runes;
     std::vector<Artifact> artifacts;
+    StatBlock stats;
 };
 
 struct CraftItem {
@@ -48,6 +50,11 @@ struct CraftItem {
 
 std::vector<AccountMonster> load_account(const std::filesystem::path& path,
                                          WarningSink warnings = {});
+std::vector<AccountMonster> load_account(const std::filesystem::path& path,
+                                         const RuneMapping& mapping,
+                                         WarningSink warnings = {});
+StatBlock calculate_monster_stats(const AccountMonster& monster,
+                                  const SetEffects& set_effects);
 std::vector<CraftItem> load_craft_items(const std::filesystem::path& path,
                                         WarningSink warnings = {});
 

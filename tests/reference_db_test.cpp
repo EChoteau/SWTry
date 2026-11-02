@@ -11,7 +11,7 @@ TEST_CASE("ReferenceDB indexes monsters by com2us_id") {
         std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/reference_monsters.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
-    REQUIRE(database.size() == 1);
+    REQUIRE(database.size() == 2);
     const auto* monster = database.find(12302);
     REQUIRE(monster != nullptr);
     CHECK(monster->name == "Forest Keeper");

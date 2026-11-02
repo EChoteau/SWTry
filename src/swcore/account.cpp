@@ -77,9 +77,54 @@ Artifact parse_artifact(const json& object, const WarningSink& warnings) {
     return artifact;
 }
 
+void add_stat(StatValues& values, int stat_id, int amount, bool percent) {
+    if (percent) {
+        switch (stat_id) {
+        case 2: values.hp += amount; break;
+        case 4: values.attack += amount; break;
+        case 6: values.defense += amount; break;
+        }
+        return;
+    }
+    switch (stat_id) {
+    case 1: values.hp += amount; break;
+    case 3: values.attack += amount; break;
+    case 5: values.defense += amount; break;
+    case 8: values.speed += amount; break;
+    case 9: values.crit_rate += amount; break;
+    case 10: values.crit_damage += amount; break;
+    case 11: values.resistance += amount; break;
+    case 12: values.accuracy += amount; break;
+    default: break;
+    }
+}
+
+void add_set_stat(StatValues& values, const SetActivation& activation) {
+    if (activation.activations <= 0 ||
+        activation.effect.status != "confirmed" ||
+        activation.effect.type != "personnel" ||
+        activation.effect.unit != "%")
+        return;
+    const int amount = activation.activations * activation.effect.value;
+    if (activation.effect.stat == "hp") values.hp += amount;
+    else if (activation.effect.stat == "attack") values.attack += amount;
+    else if (activation.effect.stat == "def") values.defense += amount;
+    else if (activation.effect.stat == "spd") values.speed += amount;
+    else if (activation.effect.stat == "crit_rate") values.crit_rate += amount;
+    else if (activation.effect.stat == "crit_damage") values.crit_damage += amount;
+    else if (activation.effect.stat == "resistance") values.resistance += amount;
+    else if (activation.effect.stat == "accuracy") values.accuracy += amount;
+}
+
 }  // namespace
 
 std::vector<AccountMonster> load_account(const std::filesystem::path& path,
+                                         WarningSink warnings) {
+    return load_account(path, RuneMapping{}, std::move(warnings));
+}
+
+std::vector<AccountMonster> load_account(const std::filesystem::path& path,
+                                         const RuneMapping& rune_mapping,
                                          WarningSink warnings) {
     std::vector<AccountMonster> monsters;
     std::ifstream input(path);
@@ -99,7 +144,7 @@ std::vector<AccountMonster> load_account(const std::filesystem::path& path,
         warn(warnings, "Account: 'unit_list' must be an array");
         return monsters;
     }
-    const auto all_runes = load_runes(path, warnings);
+    const auto all_runes = load_runes(path, rune_mapping, warnings);
     std::unordered_multimap<std::uint64_t, Rune> runes_by_unit;
     for (const auto& rune : all_runes) runes_by_unit.emplace(rune.occupied_id, rune);
 
@@ -144,9 +189,55 @@ std::vector<AccountMonster> load_account(const std::filesystem::path& path,
                          [](const Artifact& left, const Artifact& right) {
                              return left.slot < right.slot;
                          });
+        monster.stats = calculate_monster_stats(monster, {});
         monsters.push_back(std::move(monster));
     }
+
     return monsters;
+}
+
+StatBlock calculate_monster_stats(const AccountMonster& monster,
+                                  const SetEffects& set_effects) {
+    StatValues white{monster.con * 15, monster.attack, monster.defense,
+                     monster.speed, monster.crit_rate, monster.crit_damage,
+                     monster.resistance, monster.accuracy};
+    StatValues rune_fixed;
+    StatValues rune_percent;
+    std::vector<int> set_ids;
+    for (const auto& rune : monster.runes) {
+        if (rune.occupancy != RuneOccupancy::Equipped) continue;
+        set_ids.push_back(rune.set_id);
+        if (rune.primary)
+            add_stat(rune.primary->kind == StatValueKind::Percent
+                         ? rune_percent : rune_fixed,
+                     rune.primary->stat_id, rune.primary->value,
+                     rune.primary->kind == StatValueKind::Percent);
+        if (rune.innate)
+            add_stat(rune.innate->kind == StatValueKind::Percent
+                         ? rune_percent : rune_fixed,
+                     rune.innate->stat_id, rune.innate->value,
+                     rune.innate->kind == StatValueKind::Percent);
+        for (const auto& secondary : rune.secondary) {
+            add_stat(secondary.value.kind == StatValueKind::Percent
+                         ? rune_percent : rune_fixed,
+                     secondary.value.stat_id,
+                     secondary.value.value + secondary.grind,
+                     secondary.value.kind == StatValueKind::Percent);
+        }
+    }
+    StatValues artifact_fixed;
+    StatValues artifact_percent;
+    for (const auto& artifact : monster.artifacts) {
+        const int id = static_cast<int>(artifact.primary[0]);
+        if (id == 100) artifact_fixed.hp += static_cast<int>(artifact.primary[1]);
+        else if (id == 101) artifact_fixed.attack += static_cast<int>(artifact.primary[1]);
+        else if (id == 102) artifact_fixed.defense += static_cast<int>(artifact.primary[1]);
+    }
+    StatValues set_percent;
+    for (const auto& activation : calculate_set_activations(set_ids, set_effects))
+        add_set_stat(set_percent, activation);
+    return calculate_stat_block(white, rune_fixed, rune_percent,
+                                artifact_fixed, artifact_percent, set_percent);
 }
 
 std::vector<CraftItem> load_craft_items(const std::filesystem::path& path,

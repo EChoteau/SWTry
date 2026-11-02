@@ -1,0 +1,42 @@
+{
+  "pool": {
+    "target_unit_id": 17858844162,
+    "locked_unit_ids": [],
+    "inventory_only": false,
+    "minimum_rune_level": 12,
+    "minimum_stars": 6
+  },
+  "scenarios": [
+    {
+      "name": "Fatal + Blade",
+      "sets": { "Fatal": 4, "Lame": 2 }
+    },
+    {
+      "name": "Rage + Blade",
+      "sets": { "Rage": 4, "Lame": 2 }
+    }
+  ],
+  "main_stats": {
+    "2": ["ATK%", "SPD"],
+    "4": ["CDmg", "ATK%"],
+    "6": ["ATK%"]
+  },
+  "constraints": {
+    "SPD": { "min": 170 },
+    "ACC": { "min": 35 },
+    "CRate": { "min": 70 }
+  },
+  "grindstones": {},
+  "objective": {
+    "mode": "optimize",
+    "weights": {
+      "ATK": 1.0,
+      "CDmg": 8.0,
+      "CRate": 4.0
+    }
+  },
+  "limits": {
+    "top_n": 20,
+    "time_budget_s": 60
+  }
+}

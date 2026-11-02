@@ -52,14 +52,21 @@ std::optional<StatValue> parse_stat_value(const json& value,
                           "': " + error.what());
         return std::nullopt;
     }
-    if (stat_id == 0) return std::nullopt;
-
     StatValue result;
     result.stat_id = stat_id;
     result.value = amount;
+    if (stat_id == 0) {
+        result.stat = StatType::None;
+        result.kind = StatValueKind::Unknown;
+        return result;
+    }
     if (mapping) {
+        if (mapping->stat_names.find(stat_id) == mapping->stat_names.end())
+            result.stat = StatType::Unknown;
         const auto kind = mapping->kind_for_stat(stat_id);
         if (kind) result.kind = *kind;
+    } else {
+        result.stat = StatType::Unknown;
     }
     return result;
 }
@@ -171,6 +178,12 @@ RuneMapping RuneMapping::load(const std::filesystem::path& path,
 
     if (std::filesystem::is_directory(path)) {
         load_table(path / "rune_effectTypes.json", mapping.stat_names);
+        for (const auto& [id, name] : mapping.stat_names) {
+            if (!name.empty())
+                mapping.stat_kinds[id] =
+                    name.find('%') != std::string::npos
+                        ? StatValueKind::Percent : StatValueKind::Flat;
+        }
         load_table(path / "rune_sets.json", mapping.set_names);
         return mapping;
     }
@@ -196,6 +209,12 @@ RuneMapping RuneMapping::load(const std::filesystem::path& path,
         effects != rune->end() && effects->is_object()) {
         for (const auto& [id, name] : effects->items())
             mapping.stat_names[std::stoi(id)] = name.get<std::string>();
+        for (const auto& [id, name] : mapping.stat_names) {
+            if (!name.empty())
+                mapping.stat_kinds[id] =
+                    name.find('%') != std::string::npos
+                        ? StatValueKind::Percent : StatValueKind::Flat;
+        }
     }
     if (const auto sets = rune->find("sets");
         sets != rune->end() && sets->is_object()) {
@@ -206,11 +225,9 @@ RuneMapping RuneMapping::load(const std::filesystem::path& path,
 }
 
 std::optional<StatValueKind> RuneMapping::kind_for_stat(int stat_id) const {
-    const auto it = stat_names.find(stat_id);
-    if (it == stat_names.end() || it->second.empty()) return std::nullopt;
-    return it->second.find('%') == std::string::npos
-               ? StatValueKind::Flat
-               : StatValueKind::Percent;
+    const auto it = stat_kinds.find(stat_id);
+    if (it == stat_kinds.end()) return std::nullopt;
+    return it->second;
 }
 
 std::vector<Rune> load_runes(const std::filesystem::path& path,
@@ -245,6 +262,30 @@ std::vector<Rune> load_runes(const std::filesystem::path& path,
         warn(warnings, "Runes: root must be an object");
         return runes;
     }
+    const auto parse_rune_list = [&](const json& list, std::uint64_t unit_id,
+                                     const std::string& source_name) {
+        if (!list.is_array()) return;
+        for (const auto& value : list) {
+            if (!value.is_object()) {
+                warn(warnings, "Runes: ignored non-object rune");
+                continue;
+            }
+            const auto rune = parse_rune(value, mapping, warnings);
+            if (!rune) continue;
+            Rune parsed = *rune;
+            parsed.source_unit_id = unit_id;
+            parsed.source_name = source_name;
+            if (parsed.occupancy == RuneOccupancy::Inventory) {
+                parsed.source_name = "inventaire";
+                parsed.source_unit_id = 0;
+            }
+            runes.push_back(std::move(parsed));
+        }
+    };
+
+    const auto inventory = root.find("runes");
+    if (inventory != root.end()) parse_rune_list(*inventory, 0, "Inventaire");
+
     const auto units = root.find("unit_list");
     if (units == root.end() || !units->is_array()) {
         warn(warnings, "Runes: 'unit_list' must be an array");
@@ -260,14 +301,9 @@ std::vector<Rune> load_runes(const std::filesystem::path& path,
             warn(warnings, "Runes: unit 'runes' must be an array");
             continue;
         }
-        for (const auto& value : *unit_runes) {
-            if (!value.is_object()) {
-                warn(warnings, "Runes: ignored non-object rune");
-                continue;
-            }
-            const auto rune = parse_rune(value, mapping, warnings);
-            if (rune) runes.push_back(*rune);
-        }
+        parse_rune_list(*unit_runes, unit.value("unit_id", std::uint64_t{0}),
+                        "Monstre " +
+                            std::to_string(unit.value("unit_id", std::uint64_t{0})));
     }
     return runes;
 }

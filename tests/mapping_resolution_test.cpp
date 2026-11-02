@@ -34,11 +34,11 @@ TEST_CASE("SW Exporter mapping resolves all mapping-relevant fixture IDs") {
     std::set<int> rune_stats;
     std::set<int> artifact_types;
     std::set<int> artifact_ranks;
-    std::set<int> artifact_attributes;
+    std::set<int> monster_attributes;
     std::set<int> artifact_main_effects;
     std::set<int> artifact_effects;
     for (const auto& unit : export_data.at("unit_list")) {
-        artifact_attributes.insert(unit.at("attribute").get<int>());
+        monster_attributes.insert(unit.at("attribute").get<int>());
         for (const auto& rune : unit.at("runes")) {
             rune_sets.insert(rune.at("set_id").get<int>());
             rune_stats.insert(rune.at("pri_eff").at(0).get<int>());
@@ -64,5 +64,5 @@ TEST_CASE("SW Exporter mapping resolves all mapping-relevant fixture IDs") {
     require_ids(load_json(mapping + "artifact_effectTypes_sub.json"),
                 artifact_effects);
     require_ids(load_json(mapping + "monster_attributes.json"),
-                artifact_attributes);
+                monster_attributes);
 }

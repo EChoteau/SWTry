@@ -9,6 +9,16 @@
     "ELEM_ATK_PCT": [2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]
   },
   "skills": {
-    "1": { "table": null, "element": null, "shown_in_stats": null, "status": "unknown" }
-  }
+  "1":  { "table": "SPD_PCT",       "element": null,    "shown_in_stats": false, "status": "probable" },
+  "2":  { "table": "CRIT_DMG_PCT",  "element": null,    "shown_in_stats": false, "status": "probable" },
+  "3":  { "table": "ATK_PCT",       "element": null,    "shown_in_stats": false, "status": "probable" },
+  "4":  { "table": "DEF_PCT",       "element": null,    "shown_in_stats": false, "status": "probable" },
+  "5":  { "table": "HP_PCT",        "element": null,    "shown_in_stats": false, "status": "probable" },
+  "6":  { "table": "ELEM_ATK_PCT",  "element": "Fire",  "shown_in_stats": false, "status": "probable" },
+  "7":  { "table": "ELEM_ATK_PCT",  "element": "Water", "shown_in_stats": false, "status": "probable" },
+  "8":  { "table": "ELEM_ATK_PCT",  "element": "Wind",  "shown_in_stats": false, "status": "probable" },
+  "9":  { "table": "ELEM_ATK_PCT",  "element": "Light", "shown_in_stats": false, "status": "probable" },
+  "10": { "table": "ELEM_ATK_PCT",  "element": "Dark",  "shown_in_stats": false, "status": "probable" },
+  "11": { "table": null, "status": "unknown" }
+}
 }
