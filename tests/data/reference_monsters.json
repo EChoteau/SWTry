@@ -23,4 +23,28 @@
     "skills": [4],
     "leader_skill": null
   }
+  ,
+  {
+    "com2us_id": 22901,
+    "name": "Cannon Girl",
+    "element": "Water",
+    "natural_stars": 4,
+    "base_stars": 4,
+    "awaken_level": 0,
+    "can_awaken": false,
+    "family_id": 22900,
+    "base_hp": 4725,
+    "base_attack": 345,
+    "base_defense": 321,
+    "speed": 102,
+    "crit_rate": 15,
+    "crit_damage": 50,
+    "resistance": 15,
+    "accuracy": 0,
+    "max_lvl_hp": 8730,
+    "max_lvl_attack": 637,
+    "max_lvl_defense": 593,
+    "skills": [13301, 13306],
+    "leader_skill": null
+  }
 ]

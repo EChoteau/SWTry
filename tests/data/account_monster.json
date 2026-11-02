@@ -1,0 +1,34 @@
+{
+  "unit_list": [
+    {
+      "unit_id": 20291985178,
+      "unit_master_id": 22901,
+      "unit_level": 40,
+      "class": 6,
+      "attribute": 1,
+      "con": 582,
+      "atk": 637,
+      "def": 593,
+      "spd": 102,
+      "resist": 15,
+      "accuracy": 0,
+      "critical_rate": 15,
+      "critical_damage": 50,
+      "runes": [],
+      "artifacts": [
+        {
+          "rid": 437520462,
+          "slot": 2,
+          "type": 2,
+          "attribute": 0,
+          "unit_style": 1,
+          "rank": 5,
+          "level": 15,
+          "pri_effect": [100, 1500, 15, 0, 0],
+          "sec_effects": [[222, 4, 0, 0, 0]],
+          "occupied_id": 20291985178
+        }
+      ]
+    }
+  ]
+}

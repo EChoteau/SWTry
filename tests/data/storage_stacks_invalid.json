@@ -1,0 +1,8 @@
+{
+  "unit_storage_list": [
+    {"unit_master_id": 10001, "class": 4, "quantity": 2},
+    {"unit_master_id": 10002, "class": 5},
+    {"unit_master_id": 10003, "class": 3, "quantity": -1},
+    {"unit_master_id": 10004, "class": 2, "quantity": 1}
+  ]
+}

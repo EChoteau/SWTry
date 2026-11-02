@@ -28,7 +28,11 @@ endif()
 
 add_library(swcore STATIC
     src/swcore/swcore.cpp
-    src/swcore/reference_db.cpp)
+    src/swcore/reference_db.cpp
+    src/swcore/storage_stacks.cpp
+    src/swcore/runes.cpp
+    src/swcore/account.cpp
+    src/swcore/account_bonuses.cpp)
 target_include_directories(swcore
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(swcore
@@ -51,7 +55,12 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(tests
         tests/smoke_test.cpp
-        tests/reference_db_test.cpp)
+        tests/reference_db_test.cpp
+        tests/storage_stacks_test.cpp
+        tests/runes_test.cpp
+        tests/account_test.cpp
+        tests/mapping_resolution_test.cpp
+        tests/account_bonuses_test.cpp)
     target_compile_definitions(tests PRIVATE
         SW_PROJECT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(tests PRIVATE swcore Catch2::Catch2WithMain project_warnings)

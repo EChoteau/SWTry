@@ -1,0 +1,13 @@
+These tables are intentionally empty until the account-bonus values are
+verified manually. Each category is keyed by bonus ID, then by level:
+
+{
+  "wizard_skills": {
+    "1": {
+      "1": {"stat": "verified_stat_id", "flat": 0, "percent": 0}
+    }
+  }
+}
+
+Do not add inferred values. Missing IDs or levels are reported by the CLI as
+[inconnu: <id>, niveau N].

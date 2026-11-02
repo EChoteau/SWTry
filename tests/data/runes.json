@@ -1,0 +1,37 @@
+{
+  "unit_list": [
+    {
+      "unit_id": 17702826581,
+      "runes": [
+        {
+          "rune_id": 40495795832,
+          "occupied_type": 1,
+          "occupied_id": 17702826581,
+          "slot_no": 1,
+          "rank": 5,
+          "class": 6,
+          "set_id": 17,
+          "upgrade_curr": 15,
+          "pri_eff": [3, 160],
+          "prefix_eff": [0, 0],
+          "sec_eff": [[10, 14, 0, 0], [9, 12, 0, 0]],
+          "extra": 3
+        },
+        {
+          "rune_id": 40495795834,
+          "occupied_type": 2,
+          "occupied_id": 0,
+          "slot_no": 2,
+          "rank": 6,
+          "class": 6,
+          "set_id": 17,
+          "upgrade_curr": 0,
+          "pri_eff": [2, 8],
+          "prefix_eff": [1, 100],
+          "sec_eff": [],
+          "extra": 0
+        }
+      ]
+    }
+  ]
+}
