@@ -208,12 +208,14 @@ void load_mainstat_ids(const std::filesystem::path& path,
 
 }  // namespace
 
-SolverConfig SolverConfig::load(const std::filesystem::path& path,
-                                const std::filesystem::path& mapping_directory,
-                                WarningSink warnings) {
+namespace {
+
+SolverConfig parse_root(const json& root_value,
+                        const std::filesystem::path& mapping_directory,
+                        const WarningSink& warnings) {
     SolverConfig config;
-    const auto root = read_json(path, warnings);
-    if (!root || !root->is_object()) return config;
+    const json* root = &root_value;
+    if (!root->is_object()) return config;
 
     if (const auto pool = root->find("pool");
         pool != root->end() && pool->is_object()) {
@@ -349,6 +351,15 @@ SolverConfig SolverConfig::load(const std::filesystem::path& path,
     }
 
     read(*root, "craft_min_level", config.craft_min_level, warnings);
+    if (const auto locks = root->find("locks");
+        locks != root->end() && locks->is_object()) {
+        std::string mode = "respect";
+        read(*locks, "mode", mode, warnings);
+        if (mode == "ignore") config.locks.mode = LockMode::Ignore;
+        else if (mode == "respect") config.locks.mode = LockMode::Respect;
+        else warn(warnings, "SolverConfig: locks.mode must be \"respect\" or \"ignore\"");
+        read(*locks, "keep_target_locked", config.locks.keep_target_locked, warnings);
+    }
     if (const auto grindstones = root->find("grindstones");
         grindstones != root->end() && grindstones->is_object() &&
         !grindstones->empty()) {
@@ -416,6 +427,119 @@ SolverConfig SolverConfig::load(const std::filesystem::path& path,
     }
 
     return config;
+}
+
+json craft_rules_json(const std::map<int, GrindstoneRule>& rules) {
+    json stats = json::object();
+    for (const auto& [stat, rule] : rules) {
+        json entry{{"rarity", rule.rarity}};
+        switch (rule.mode) {
+        case GrindstoneMode::Min: entry["roll"] = "min"; break;
+        case GrindstoneMode::Max: entry["roll"] = "max"; break;
+        case GrindstoneMode::Exact: entry["roll"] = rule.exact; break;
+        case GrindstoneMode::Off: entry["roll"] = "off"; break;
+        }
+        stats[std::to_string(stat)] = entry;
+    }
+    return stats;
+}
+
+json optional_int(const std::optional<int>& value) {
+    return value ? json(*value) : json(nullptr);
+}
+
+}  // namespace
+
+SolverConfig SolverConfig::load(const std::filesystem::path& path,
+                                const std::filesystem::path& mapping_directory,
+                                WarningSink warnings) {
+    const auto root = read_json(path, warnings);
+    if (!root) return {};
+    return parse_root(*root, mapping_directory, warnings);
+}
+
+SolverConfig SolverConfig::parse(const std::string& text,
+                                 const std::filesystem::path& mapping_directory,
+                                 WarningSink warnings) {
+    json root;
+    try {
+        root = json::parse(text);
+    } catch (const json::exception& error) {
+        warn(warnings, std::string("SolverConfig: invalid JSON: ") + error.what());
+        return {};
+    }
+    return parse_root(root, mapping_directory, warnings);
+}
+
+// Même format que celui lu par load()/parse() (ids numériques).
+std::string SolverConfig::to_json() const {
+    json root = json::object();
+
+    json pool_json = json::object();
+    if (pool.target_unit_id) pool_json["target_unit_id"] = *pool.target_unit_id;
+    pool_json["locked_unit_ids"] = pool.locked_unit_ids;
+    pool_json["inventory_only"] = pool.inventory_only;
+    pool_json["minimum_rune_level"] = pool.minimum_rune_level;
+    pool_json["minimum_stars"] = pool.minimum_stars;
+    pool_json["projection_level"] = pool.projection_level == kProjectionCurrent
+                                        ? json("current")
+                                        : json(pool.projection_level);
+    root["pool"] = pool_json;
+
+    json scenarios_json = json::array();
+    for (const auto& scenario : scenarios) {
+        json sets = json::array();
+        for (const auto& set : scenario.sets)
+            sets.push_back({{"set_id", set.set_id}, {"pieces", set.pieces}});
+        scenarios_json.push_back(
+            {{"name", scenario.name}, {"any_set", scenario.any_set}, {"sets", sets}});
+    }
+    root["scenarios"] = scenarios_json;
+
+    json main_json = json::object();
+    for (int slot = 2; slot <= 6; ++slot) {
+        const auto& selection = main_stats[static_cast<std::size_t>(slot)];
+        if (selection.all) main_json[std::to_string(slot)] = "all";
+        else if (!selection.stat_ids.empty())
+            main_json[std::to_string(slot)] = selection.stat_ids;
+    }
+    root["main_stats"] = main_json;
+
+    json constraints_json = json::object();
+    for (const auto& [name, constraint] : constraints) {
+        json entry = json::object();
+        if (constraint.minimum) entry["min"] = *constraint.minimum;
+        if (constraint.maximum) entry["max"] = *constraint.maximum;
+        constraints_json[name] = entry;
+    }
+    root["constraints"] = constraints_json;
+
+    root["craft_min_level"] = craft_min_level;
+    root["locks"] = {{"mode", locks.mode == LockMode::Ignore ? "ignore" : "respect"},
+                     {"keep_target_locked", locks.keep_target_locked}};
+    if (!grindstones.empty() || max_new_grinds)
+        root["grindstones"] = {{"stats", craft_rules_json(grindstones)},
+                               {"max_new_grinds", optional_int(max_new_grinds)}};
+    if (!gems.empty() || max_new_gems || !gem_regem_existing)
+        root["gems"] = {{"stats", craft_rules_json(gems)},
+                        {"max_new_gems", optional_int(max_new_gems)},
+                        {"regem_existing", gem_regem_existing}};
+
+    root["objective"] = {{"mode", objective.mode},
+                         {"weights", objective.weights},
+                         {"caps", objective.caps},
+                         {"sort_metrics", objective.sort_metrics}};
+
+    json limits_json{{"top_n", limits.top_n},
+                     {"time_budget_ms", limits.time_budget_ms},
+                     {"node_limit", limits.node_limit},
+                     {"max_builds_per_scenario", limits.max_builds_per_scenario},
+                     {"one_build_per_set_composition",
+                      limits.one_build_per_set_composition},
+                     {"max_results", limits.max_results}};
+    if (limits.min_score) limits_json["min_score"] = *limits.min_score;
+    root["limits"] = limits_json;
+    return root.dump(2);
 }
 
 }  // namespace swcore

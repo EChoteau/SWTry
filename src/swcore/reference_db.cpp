@@ -125,6 +125,9 @@ ReferenceMonster parse_monster(const json& object, const WarningSink& warnings) 
     monster.com2us_id = read<int>(object, "com2us_id", 0, warnings);
     monster.name = read<std::string>(object, "name", "", warnings);
     monster.element = parse_element(object, warnings);
+    // Archétype : donnée d'affichage, optionnelle (pas d'avertissement si absente).
+    if (const auto it = object.find("archetype"); it != object.end() && it->is_string())
+        monster.archetype = it->get<std::string>();
     monster.natural_stars = read<int>(object, "natural_stars", 0, warnings);
     monster.base_stars = read<int>(object, "base_stars", 0, warnings);
     monster.awaken_level = read<int>(object, "awaken_level", 0, warnings);

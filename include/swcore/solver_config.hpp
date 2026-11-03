@@ -1,5 +1,6 @@
 #pragma once
 
+#include "swcore/locks.hpp"
 #include "swcore/reference_db.hpp"
 
 #include <array>
@@ -33,33 +34,45 @@ struct PoolConfig {
     int minimum_rune_level = 0;
     int minimum_stars = 0;
     int projection_level = 15;
+
+    friend bool operator==(const PoolConfig&, const PoolConfig&) = default;
 };
 
 struct SetRequirement {
     int set_id = 0;
     int pieces = 0;
+
+    friend bool operator==(const SetRequirement&, const SetRequirement&) = default;
 };
 
 struct SetScenario {
     std::string name;
     std::vector<SetRequirement> sets;
     bool any_set = false;
+
+    friend bool operator==(const SetScenario&, const SetScenario&) = default;
 };
 
 struct MainStatSelection {
     bool all = false;
     std::vector<int> stat_ids;
+
+    friend bool operator==(const MainStatSelection&, const MainStatSelection&) = default;
 };
 
 struct StatConstraint {
     std::optional<double> minimum;
     std::optional<double> maximum;
+
+    friend bool operator==(const StatConstraint&, const StatConstraint&) = default;
 };
 
 struct GrindstoneRule {
     GrindstoneMode mode = GrindstoneMode::Off;
     int rarity = 0;
     int exact = 0;  // valeur imposée en mode Exact
+
+    friend bool operator==(const GrindstoneRule&, const GrindstoneRule&) = default;
 };
 
 struct ObjectiveConfig {
@@ -67,6 +80,8 @@ struct ObjectiveConfig {
     std::map<std::string, double> weights;
     std::map<std::string, double> caps;
     std::vector<std::string> sort_metrics;
+
+    friend bool operator==(const ObjectiveConfig&, const ObjectiveConfig&) = default;
 };
 
 struct SolverLimits {
@@ -80,6 +95,20 @@ struct SolverLimits {
     std::uint64_t max_results = 5'000'000;
     std::optional<double> min_score;
     std::size_t detailed_builds = 50;
+
+    friend bool operator==(const SolverLimits&, const SolverLimits&) = default;
+};
+
+// Verrous (réservations) : respect = une rune verrouillée pour un autre monstre
+// (ou pour personne) est exclue ; ignore = aucun effet. keep_target_locked :
+// les runes verrouillées pour le monstre cible sont figées dans leur slot.
+enum class LockMode { Respect, Ignore };
+
+struct LockSettings {
+    LockMode mode = LockMode::Respect;
+    bool keep_target_locked = false;
+
+    friend bool operator==(const LockSettings&, const LockSettings&) = default;
 };
 
 struct SolverConfig {
@@ -98,6 +127,10 @@ struct SolverConfig {
     bool gem_regem_existing = true;
     // Meules/gemmes simulées seulement sur les runes de ce niveau réel ou plus.
     int craft_min_level = 12;
+    LockSettings locks;
+    // Table des verrous (CLI : --locks ; GUI : data/user/locks.json). Pas dans le
+    // JSON de config : la table vit à part et survit aux nouveaux exports.
+    LockTable lock_table;
     ObjectiveConfig objective;
     SolverLimits limits;
     // Erreurs de configuration bloquantes (ex. valeur exacte hors plage).
@@ -106,6 +139,15 @@ struct SolverConfig {
     static SolverConfig load(const std::filesystem::path& path,
                              const std::filesystem::path& mapping_directory,
                              WarningSink warnings = {});
+    // Même parser que load(), depuis un texte JSON.
+    static SolverConfig parse(const std::string& json_text,
+                              const std::filesystem::path& mapping_directory,
+                              WarningSink warnings = {});
+    // JSON relu à l'identique par load()/parse() (aller-retour exact, hors
+    // allowed_sets, errors et limits.detailed_builds qui n'ont pas de clé JSON).
+    std::string to_json() const;
+
+    friend bool operator==(const SolverConfig&, const SolverConfig&) = default;
 };
 
 }  // namespace swcore

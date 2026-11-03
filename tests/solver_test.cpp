@@ -1049,3 +1049,98 @@ TEST_CASE("Builds with the same score are ordered deterministically") {
     CHECK(same_order);
     CHECK(ordered);
 }
+
+TEST_CASE("Build efficiency is a real search metric (constraint and weight)") {
+    swcore::AccountMonster target;
+    target.con = 648;
+    target.attack = 801;
+    target.defense = 582;
+    target.speed = 108;
+    target.crit_rate = 15;
+    target.crit_damage = 50;
+    target.resistance = 15;
+
+    // Deux runes par slot : l'une plus forte en ATQ, l'autre plus efficace.
+    const std::vector<swcore::Rune> pool{
+        craft_rune(11, 1, 3, 160, {{4, 12, 0, 0}}),
+        craft_rune(12, 1, 3, 160, {{8, 6, 0, 0}, {9, 6, 0, 0}, {10, 7, 0, 0}, {12, 8, 0, 0}}),
+        craft_rune(21, 2, 4, 63, {{3, 20, 0, 0}}),
+        craft_rune(22, 2, 4, 51, {{8, 6, 0, 0}, {9, 6, 0, 0}, {10, 7, 0, 0}, {11, 8, 0, 0}}),
+        craft_rune(31, 3, 5, 160, {{4, 10, 0, 0}}),
+        craft_rune(32, 3, 5, 160, {{8, 5, 0, 0}, {9, 5, 0, 0}, {12, 8, 0, 0}}),
+        craft_rune(41, 4, 4, 63, {{3, 15, 0, 0}}),
+        craft_rune(42, 4, 4, 63, {{8, 6, 0, 0}, {9, 6, 0, 0}}),
+        craft_rune(51, 5, 1, 2448, {{4, 11, 0, 0}}),
+        craft_rune(52, 5, 1, 2448, {{8, 6, 0, 0}, {9, 6, 0, 0}, {10, 7, 0, 0}}),
+        craft_rune(61, 6, 4, 63, {{3, 18, 0, 0}}),
+        craft_rune(62, 6, 4, 63, {{8, 6, 0, 0}, {11, 8, 0, 0}, {12, 8, 0, 0}})};
+
+    // Force brute : efficacité = calculate_build_efficiency des 6 runes.
+    const auto brute = [&](const swcore::SolverConfig& config) {
+        std::optional<double> best;
+        for (int mask = 0; mask < 64; ++mask) {
+            std::array<swcore::Rune, 6> chosen{};
+            swcore::AccountMonster candidate = target;
+            candidate.runes.clear();
+            for (int slot = 0; slot < 6; ++slot) {
+                chosen[static_cast<std::size_t>(slot)] =
+                    pool[static_cast<std::size_t>(slot * 2 + ((mask >> slot) & 1))];
+                candidate.runes.push_back(chosen[static_cast<std::size_t>(slot)]);
+                candidate.runes.back().occupancy = swcore::RuneOccupancy::Equipped;
+            }
+            const auto total = swcore::calculate_monster_stats(candidate, {}).total;
+            const double efficiency = swcore::calculate_build_efficiency(chosen);
+            bool valid = true;
+            if (const auto it = config.constraints.find("rune_efficiency");
+                it != config.constraints.end()) {
+                if (it->second.minimum && efficiency < *it->second.minimum) valid = false;
+                if (it->second.maximum && efficiency > *it->second.maximum) valid = false;
+            }
+            if (!valid) continue;
+            double score = 0;
+            for (const auto& [name, weight] : config.objective.weights)
+                score += (name == "rune_efficiency" ? efficiency : test_metric(total, name)) *
+                         weight;
+            if (!best || score > *best) best = score;
+        }
+        return best;
+    };
+
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+    struct Case {
+        const char* name;
+        std::optional<double> min_efficiency;
+        std::optional<double> max_efficiency;
+        double efficiency_weight;
+    };
+    for (const auto& test : {Case{"poids efficacité", {}, {}, 30.0},
+                             Case{"efficacité min 45", 45.0, {}, 0.0},
+                             Case{"efficacité max 40", {}, 40.0, 0.0},
+                             Case{"min 30 et poids", 30.0, {}, 10.0}}) {
+        for (const bool any_set : {false, true}) {
+            INFO(test.name << (any_set ? " (any_set)" : " (sets fixes)"));
+            swcore::SolverConfig config;
+            config.objective.weights["attack"] = 1;
+            if (test.efficiency_weight != 0)
+                config.objective.weights["rune_efficiency"] = test.efficiency_weight;
+            if (test.min_efficiency || test.max_efficiency)
+                config.constraints["rune_efficiency"] = {test.min_efficiency,
+                                                         test.max_efficiency};
+            config.limits.top_n = 1;
+            config.scenarios = {any_set ? swcore::SetScenario{"Tous", {}, true}
+                                        : swcore::SetScenario{"Six", {{17, 6}}, false}};
+            const auto expected = brute(config);
+            const auto report = swcore::solve_runes(target, pool, {}, config, mapping);
+            REQUIRE(report.scenarios.size() == 1);
+            const auto& result = report.scenarios[0];
+            REQUIRE(result.builds.empty() == !expected.has_value());
+            if (!expected) continue;
+            const auto& build = result.builds.front();
+            CHECK(build.score == *expected);
+            CHECK(build.metrics.rune_efficiency == build.efficiency);
+            CHECK(build.efficiency == swcore::calculate_build_efficiency(build.runes));
+            if (test.min_efficiency) CHECK(build.efficiency >= *test.min_efficiency);
+            if (test.max_efficiency) CHECK(build.efficiency <= *test.max_efficiency);
+        }
+    }
+}

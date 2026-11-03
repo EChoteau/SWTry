@@ -1,12 +1,15 @@
 #include "swcore/account.hpp"
 #include "swcore/account_bonuses.hpp"
+#include "swcore/build_text.hpp"
 #include "swcore/craft_audit.hpp"
+#include "swcore/equip.hpp"
 #include "swcore/reference_db.hpp"
 #include "swcore/runes.hpp"
 #include "swcore/storage_stacks.hpp"
 #include "swcore/set_effects.hpp"
 #include "swcore/solver_config.hpp"
 #include "swcore/solver.hpp"
+#include "swcore/solve_async.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +38,7 @@ namespace {
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+using namespace swcore::text;  // rendu texte partagé avec swgui
 
 struct Options {
     fs::path export_path;
@@ -51,62 +55,20 @@ struct Options {
     bool check_white = false;
     bool audit_craft = false;
     fs::path csv_export_path;
+    fs::path locks_path;  // --locks : table des verrous (format data/user/locks.json)
+    fs::path equip_actions_path;  // --equip-actions : équipement virtuel (GUI)
     std::string marginal_kind;  // "gems" ou "grinds" (--marginal)
     int marginal_max = 5;
     int width = 0;  // 0 = largeur de la console
 };
 
-std::string unknown(int id) {
-    return "[inconnu: " + std::to_string(id) + "]";
-}
-
-std::string element_name(swcore::Element element) {
-    switch (element) {
-    case swcore::Element::Fire: return "Fire";
-    case swcore::Element::Water: return "Water";
-    case swcore::Element::Wind: return "Wind";
-    case swcore::Element::Light: return "Light";
-    case swcore::Element::Dark: return "Dark";
-    case swcore::Element::Pure: return "Pure";
-    case swcore::Element::Unknown: return "[inconnu: element]";
-    }
-    return "[inconnu: element]";
-}
-
-std::string stat_name(const swcore::RuneMapping& mapping, int id) {
-    const auto it = mapping.stat_names.find(id);
-    return it == mapping.stat_names.end() ? unknown(id) : it->second;
-}
-
-std::string set_name(const swcore::RuneMapping& mapping, int id) {
-    const auto it = mapping.set_names.find(id);
-    return it == mapping.set_names.end() ? unknown(id) : it->second;
-}
-
-std::string origin_name(const swcore::Rune& rune) {
-    if (rune.occupancy == swcore::RuneOccupancy::Inventory)
-        return "Inventaire";
-    return rune.source_name.empty() ? "Monstre " +
-                                           std::to_string(rune.source_unit_id)
-                                    : rune.source_name;
-}
 
 using IdNames = std::map<int, std::string>;
 
-std::string format_number(double value) {
-    std::ostringstream output;
-    output << std::setprecision(12) << value;
-    return output.str();
-}
 
 void print_effect(const swcore::RuneMapping& mapping,
                   const swcore::StatValue& effect);
 
-const char* stat_label(std::size_t index) {
-    static constexpr const char* labels[] = {
-        "PV", "ATQ", "DEF", "VIT", "Tx crit.", "Dgts crit.", "RES", "Préc."};
-    return index < 8 ? labels[index] : "?";
-}
 
 json build_report_json(const swcore::BuildReport& report) {
     json result{
@@ -153,79 +115,6 @@ json build_report_json(const swcore::BuildReport& report) {
 // Texte : largeur d'affichage UTF-8, alignement, nombres, mode ASCII.
 // ---------------------------------------------------------------------------
 
-std::size_t utf8_length(unsigned char lead) {
-    if (lead < 0x80) return 1;
-    if ((lead >> 5) == 0x6) return 2;
-    if ((lead >> 4) == 0xE) return 3;
-    if ((lead >> 3) == 0x1E) return 4;
-    return 1;
-}
-
-std::size_t display_width(const std::string& text) {
-    std::size_t width = 0;
-    for (const unsigned char c : text)
-        if ((c & 0xC0) != 0x80) ++width;
-    return width;
-}
-
-std::string truncate_to(const std::string& text, std::size_t width) {
-    if (display_width(text) <= width) return text;
-    if (width <= 3) return std::string(width, '.');
-    std::string result;
-    std::size_t used = 0;
-    for (std::size_t i = 0; i < text.size() && used < width - 3;) {
-        const auto length = utf8_length(static_cast<unsigned char>(text[i]));
-        result.append(text, i, length);
-        i += length;
-        ++used;
-    }
-    return result + "...";
-}
-
-std::string pad_right(const std::string& text, std::size_t width) {
-    const auto used = display_width(text);
-    return used >= width ? text : text + std::string(width - used, ' ');
-}
-
-std::string pad_left(const std::string& text, std::size_t width) {
-    const auto used = display_width(text);
-    return used >= width ? text : std::string(width - used, ' ') + text;
-}
-
-std::string group_digits(long long value) {
-    const bool negative = value < 0;
-    const std::string digits =
-        std::to_string(negative ? -static_cast<unsigned long long>(value)
-                                : static_cast<unsigned long long>(value));
-    std::string result;
-    for (std::size_t i = 0; i < digits.size(); ++i) {
-        if (i > 0 && (digits.size() - i) % 3 == 0) result += ' ';
-        result += digits[i];
-    }
-    return negative ? "-" + result : result;
-}
-
-std::string signed_group(long long value) {
-    return value > 0 ? "+" + group_digits(value) : group_digits(value);
-}
-
-std::string fixed2(double value) {
-    if (std::abs(value) < 0.005) value = 0;
-    std::ostringstream output;
-    output << std::fixed << std::setprecision(2) << value;
-    return output.str();
-}
-
-std::string signed_fixed2(double value) {
-    const std::string text = fixed2(value);
-    return value >= 0.005 ? "+" + text : text;
-}
-
-std::string format_score(double value) {
-    if (value == std::floor(value) && std::abs(value) < 1e15)
-        return group_digits(static_cast<long long>(value));
-    return fixed2(value);
-}
 
 // Translittération pour --ascii : accents retirés, symboles remplacés.
 std::string to_ascii(const std::string& text) {
@@ -275,237 +164,6 @@ int console_width(int forced) {
 // Rendu d'un build.
 // ---------------------------------------------------------------------------
 
-std::string effect_text(const swcore::RuneMapping& mapping,
-                        const std::optional<swcore::StatValue>& effect) {
-    if (!effect || effect->stat == swcore::StatType::None) return "aucun";
-    return stat_name(mapping, effect->stat_id) + " " +
-           std::to_string(effect->value);
-}
-
-std::string stars_text(int stars) {
-    // class 11..16 = runes antiques (16 = 6* antique)
-    return stars > 10 ? std::to_string(stars - 10) + "* antique"
-                      : std::to_string(stars) + "*";
-}
-
-IdNames load_id_names(const fs::path& path, const swcore::WarningSink& warning);
-
-// Nom de rareté (1-5) depuis le mapping rune_quality.json.
-const std::string& rarity_name(int rarity) {
-    static const IdNames names =
-        load_id_names("data/mapping/rune_quality.json", swcore::WarningSink{});
-    static std::map<int, std::string> unknown_names;
-    const auto it = names.find(rarity);
-    if (it != names.end()) return it->second;
-    auto& fallback = unknown_names[rarity];
-    if (fallback.empty()) fallback = unknown(rarity);
-    return fallback;
-}
-
-constexpr std::size_t kCardInner = 34;  // carte = "| " + 34 + " |" = 38 colonnes
-constexpr std::size_t kCardWidth = kCardInner + 4;
-constexpr std::size_t kCardGap = 2;
-constexpr int kCardsMinWidth = 120;
-
-std::vector<std::string> rune_card(const swcore::RuneView& view,
-                                   const swcore::RuneMapping& mapping) {
-    const auto& rune = view.rune;
-    std::vector<std::string> body;
-    body.push_back("+" + std::to_string(rune.upgrade_level) + " " +
-                   set_name(mapping, rune.set_id) + " (slot " +
-                   std::to_string(rune.slot) + ")  " + stars_text(rune.stars));
-    body.push_back("Principale : " + effect_text(mapping, rune.primary));
-    const bool has_innate =
-        rune.innate && rune.innate->stat != swcore::StatType::None;
-    body.push_back("Innate : " +
-                   (has_innate ? effect_text(mapping, rune.innate) : std::string{"-"}));
-    // Substats réelles ; chaque modification simulée est marquée sur la ligne
-    // qu'elle touche (ligne remplacée par une gemme, meule à poser).
-    for (std::size_t j = 0; j < rune.secondary.size(); ++j) {
-        const auto& substat = rune.secondary[j];
-        std::string line = "  " + stat_name(mapping, substat.value.stat_id) + " " +
-                           std::to_string(substat.value.value + substat.grind);
-        if (substat.grind != 0) line += " [+" + std::to_string(substat.grind) + "]";
-        if (substat.enchanted) line += " (gemme)";
-        const auto gem = std::find_if(view.gems.begin(), view.gems.end(),
-                                      [&](const swcore::AppliedGem& g) {
-                                          return g.line == static_cast<int>(j);
-                                      });
-        if (gem != view.gems.end()) line += " [remplacée]";
-        body.push_back(line);
-        // Gemme sur deux lignes (largeur de carte) : rareté, puis stat et valeur.
-        if (gem != view.gems.end()) {
-            body.push_back("  -> gemme " + rarity_name(gem->rarity) + " (simulée)");
-            body.push_back("     " + stat_name(mapping, gem->stat_id) + " " +
-                           std::to_string(gem->value));
-        }
-        for (const auto& grind : view.grinds)
-            if (grind.line == static_cast<int>(j))
-                body.push_back("  -> meule " + rarity_name(grind.rarity) + " +" +
-                               std::to_string(grind.value) + " (simulée)");
-    }
-    for (std::size_t i = rune.secondary.size(); i < 4; ++i) body.emplace_back();
-    body.push_back("Id : " + std::to_string(rune.rune_id));
-    body.push_back("Origine : " + origin_name(rune));
-    body.push_back("Efficacité : " + fixed2(view.efficiency) + " %");
-    if (view.simulated_efficiency)
-        body.push_back("  après simulation : " + fixed2(*view.simulated_efficiency) +
-                       " %");
-
-    std::vector<std::string> card;
-    const std::string border = "+" + std::string(kCardWidth - 2, '-') + "+";
-    card.push_back(border);
-    for (const auto& line : body)
-        card.push_back("| " + pad_right(truncate_to(line, kCardInner), kCardInner) +
-                       " |");
-    card.push_back(border);
-    return card;
-}
-
-void print_card_row(std::ostream& out, const swcore::BuildReport& report,
-                    const swcore::RuneMapping& mapping,
-                    const std::array<int, 3>& slots) {
-    std::array<std::vector<std::string>, 3> cards;
-    std::size_t height = 0;
-    for (std::size_t i = 0; i < 3; ++i) {
-        cards[i] = rune_card(report.runes[static_cast<std::size_t>(slots[i] - 1)],
-                             mapping);
-        height = std::max(height, cards[i].size());
-    }
-    for (std::size_t line = 0; line < height; ++line) {
-        std::string row;
-        for (std::size_t i = 0; i < 3; ++i) {
-            if (i > 0) row += std::string(kCardGap, ' ');
-            row += line < cards[i].size() ? cards[i][line]
-                                          : std::string(kCardWidth, ' ');
-        }
-        out << row << '\n';
-    }
-}
-
-void print_runes(std::ostream& out, const swcore::BuildReport& report,
-                 const swcore::RuneMapping& mapping, int width) {
-    if (width >= kCardsMinWidth) {
-        print_card_row(out, report, mapping, {6, 1, 2});
-        print_card_row(out, report, mapping, {5, 4, 3});
-        return;
-    }
-    for (int slot = 1; slot <= 6; ++slot)
-        for (const auto& line :
-             rune_card(report.runes[static_cast<std::size_t>(slot - 1)], mapping))
-            out << line << '\n';
-}
-
-std::optional<double> equipped_efficiency(const swcore::AccountMonster& target) {
-    std::array<swcore::Rune, 6> runes{};
-    std::array<bool, 6> present{};
-    for (const auto& rune : target.runes) {
-        if (rune.occupancy != swcore::RuneOccupancy::Equipped || rune.slot < 1 ||
-            rune.slot > 6)
-            continue;
-        runes[static_cast<std::size_t>(rune.slot - 1)] = rune;
-        present[static_cast<std::size_t>(rune.slot - 1)] = true;
-    }
-    if (std::find(present.begin(), present.end(), false) != present.end())
-        return std::nullopt;
-    return swcore::calculate_build_efficiency(runes);
-}
-
-void print_stats_table(std::ostream& out, const swcore::BuildReport& report,
-                       const swcore::AccountMonster& target) {
-    constexpr std::size_t c1 = 20, c2 = 20, c3 = 24, c4 = 12;
-    out << pad_right("Stat", c1) << pad_left("Équipé aujourd'hui", c2)
-        << pad_left("Nouveau total [+vert]", c3) << pad_left("Diff.", c4) << '\n'
-        << std::string(c1 + c2 + c3 + c4, '-') << '\n';
-    for (std::size_t i = 0; i < report.stats.size(); ++i) {
-        const auto& now = report.equipped_stats[i];
-        const auto& next = report.stats[i];
-        const std::string green = next.green >= 0
-                                      ? "+" + group_digits(next.green)
-                                      : group_digits(next.green);
-        out << pad_right(stat_label(i), c1) << pad_left(group_digits(now.total), c2)
-            << pad_left(group_digits(next.total) + " [" + green + "]", c3)
-            << pad_left(signed_group(next.total - now.total), c4) << '\n';
-    }
-    const auto equipped = swcore::calculate_derived_metrics(target.stats.total);
-    const auto metric_row = [&](const char* label, double now, double next) {
-        const auto a = static_cast<long long>(now);
-        const auto b = static_cast<long long>(next);
-        out << pad_right(label, c1) << pad_left(group_digits(a), c2)
-            << pad_left(group_digits(b), c3) << pad_left(signed_group(b - a), c4)
-            << '\n';
-    };
-    metric_row("DMG", equipped.expected_damage, report.metrics.expected_damage);
-    metric_row("PV eff.", equipped.effective_hp, report.metrics.effective_hp);
-    metric_row("PV eff. DEF brisée", equipped.effective_hp_broken_def,
-               report.metrics.effective_hp_broken_def);
-    const auto now_efficiency = equipped_efficiency(target);
-    out << pad_right("Efficacité %", c1)
-        << pad_left(now_efficiency ? fixed2(*now_efficiency) : "-", c2)
-        << pad_left(fixed2(report.metrics.rune_efficiency), c3)
-        << pad_left(now_efficiency
-                        ? signed_fixed2(report.metrics.rune_efficiency -
-                                        *now_efficiency)
-                        : "-",
-                    c4)
-        << '\n';
-}
-
-// Blocs "Meules à utiliser" et "Gemmes à utiliser" (absents si rien).
-void print_craft_blocks(std::ostream& out, const swcore::BuildReport& report,
-                        const swcore::RuneMapping& mapping) {
-    std::vector<std::string> grinds;
-    std::vector<std::string> gems;
-    for (const auto& view : report.runes) {
-        const std::string where = "slot " + std::to_string(view.rune.slot) +
-                                  "  rune " + std::to_string(view.rune.rune_id) +
-                                  "  " + origin_name(view.rune) + "  ";
-        for (const auto& gem : view.gems)
-            gems.push_back(where + "ligne " + stat_name(mapping, gem.old_stat_id) + " " +
-                           std::to_string(gem.old_value) + " remplacée par " +
-                           stat_name(mapping, gem.stat_id) + " " +
-                           std::to_string(gem.value) + " (" + rarity_name(gem.rarity) +
-                           ")");
-        for (const auto& grind : view.grinds)
-            grinds.push_back(where + stat_name(mapping, grind.stat_id) + " : meule +" +
-                             std::to_string(grind.previous) + " -> +" +
-                             std::to_string(grind.value) + " (" +
-                             rarity_name(grind.rarity) + ")");
-    }
-    if (!gems.empty()) {
-        out << "\nGemmes à utiliser (" << gems.size() << ") :\n";
-        for (const auto& line : gems) out << "  " << line << '\n';
-    }
-    if (!grinds.empty()) {
-        out << "\nMeules à utiliser (" << grinds.size() << ") :\n";
-        for (const auto& line : grinds) out << "  " << line << '\n';
-    }
-}
-
-void print_build(std::ostream& out, const swcore::BuildReport& report,
-                 const swcore::AccountMonster& target,
-                 const swcore::ReferenceDB& reference,
-                 const swcore::RuneMapping& mapping, int width) {
-    const auto* monster = reference.find(report.monster_master_id);
-    const std::string name =
-        monster ? monster->name : unknown(report.monster_master_id);
-    const std::string element =
-        monster ? element_name(monster->element) : "[inconnu: element]";
-    out << name << " (" << element << ") - niveau " << report.monster_level
-        << '\n'
-        << "Scénario : " << report.scenario << "   |   Rang " << report.rank
-        << "   |   Score " << format_score(report.score) << '\n';
-    if (report.projection_level > 0)
-        out << "Stats calculées avec runes projetées à +" << report.projection_level
-            << " (stat principale)\n";
-    if (report.simulated_craft)
-        out << "Stats calculées avec meules/gemmes simulées (voir plus bas)\n";
-    out << '\n';
-    print_stats_table(out, report, target);
-    out << '\n';
-    print_runes(out, report, mapping, width);
-    print_craft_blocks(out, report, mapping);
-}
 
 void print_no_build(std::ostream& out, const swcore::ScenarioReport& scenario,
                     const swcore::SolverConfig& config) {
@@ -559,7 +217,12 @@ void print_diagnostics(std::ostream& out, const swcore::ScenarioReport& scenario
         << ", contraintes "
         << group_digits(static_cast<long long>(scenario.cuts_constraints))
         << ", budget meules "
-        << group_digits(static_cast<long long>(scenario.cuts_craft_budget)) << '\n';
+        << group_digits(static_cast<long long>(scenario.cuts_craft_budget)) << '\n'
+        << "  Runes exclues par verrou : "
+        << group_digits(static_cast<long long>(scenario.lock_excluded));
+    if (!scenario.skipped_reason.empty())
+        out << " ; scénario écarté : " << scenario.skipped_reason;
+    out << '\n';
     const std::array<std::pair<const char*, std::size_t>, 10> columns{{
         {"Slot", 6}, {"Pool", 7}, {"Niv.", 7}, {"Étoiles", 9}, {"Stats princ.", 14},
         {"Sets", 7}, {"Sans dominées", 15}, {"Inventaire", 12},
@@ -621,8 +284,9 @@ int print_marginal(const Options& options, swcore::SolverConfig config,
     std::optional<double> previous;
     const auto row = [&](const std::string& label, const swcore::SolverConfig& run) {
         const auto started = std::chrono::steady_clock::now();
-        const auto solver =
-            swcore::solve_runes(target, runes, effects, run, "data/mapping", {});
+        swcore::AsyncSolver async;
+        async.start(target, runes, effects, run, "data/mapping");
+        const auto solver = async.wait();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - started)
                                  .count();
@@ -720,44 +384,6 @@ void print_craft_audit(std::ostream& out, const swcore::CraftAudit& audit,
         << ", gemme " << level(audit.min_level_gem) << '\n';
 }
 
-// Export CSV (séparateur ';') de tous les builds triés, scénario par scénario.
-bool export_builds_csv(const fs::path& path, const swcore::SolverReport& solver) {
-    std::ofstream output(path, std::ios::binary);
-    if (!output) return false;
-    output << "scenario;rang;score;rune_slot1;rune_slot2;rune_slot3;rune_slot4;"
-              "rune_slot5;rune_slot6;PV;ATQ;DEF;VIT;Tx crit.;Dgts crit.;RES;Préc.;"
-              "PV eff.;efficacite;meules;gemmes\n";
-    const auto line = [&](const std::string& scenario, std::size_t rank,
-                          double score,
-                          const std::array<std::uint64_t, 6>& ids,
-                          const swcore::StatValues& s, double ehp,
-                          double efficiency, int grinds, int gems) {
-        output << scenario << ';' << rank << ';' << format_number(score);
-        for (const auto id : ids) output << ';' << id;
-        output << ';' << s.hp << ';' << s.attack << ';' << s.defense << ';'
-               << s.speed << ';' << s.crit_rate << ';' << s.crit_damage << ';'
-               << s.resistance << ';' << s.accuracy << ';' << format_number(ehp)
-               << ';' << fixed2(efficiency) << ';' << grinds << ';' << gems << '\n';
-    };
-    for (const auto& scenario : solver.scenarios) {
-        if (scenario.all_builds_mode) {
-            for (std::size_t i = 0; i < scenario.all_builds.size(); ++i) {
-                const auto& b = scenario.all_builds[i];
-                line(scenario.name, i + 1, b.score, b.rune_ids, b.total,
-                     b.effective_hp, b.efficiency, b.grind_cost, b.gem_cost);
-            }
-            continue;
-        }
-        for (std::size_t i = 0; i < scenario.builds.size(); ++i) {
-            const auto& b = scenario.builds[i];
-            std::array<std::uint64_t, 6> ids{};
-            for (std::size_t s = 0; s < 6; ++s) ids[s] = b.runes[s].rune_id;
-            line(scenario.name, i + 1, b.score, ids, b.stats.total,
-                 b.metrics.effective_hp, b.efficiency, b.grind_cost, b.gem_cost);
-        }
-    }
-    return static_cast<bool>(output);
-}
 
 // ---------------------------------------------------------------------------
 // Avertissements : une seule fois chacun, regroupés par type, à la fin.
@@ -944,7 +570,9 @@ void print_usage(std::ostream& output) {
               "       swcli <export.json> --audit-craft [--ascii]\n"
               "       swcli <export.json> --optimize <config.json> [--top N]"
               " [--sort <metrique>] [--show N] [--format text|json]"
-              " [--export <builds.csv>] [--verbose] [--width N] [--ascii]\n"
+              " [--export <builds.csv>] [--locks <locks.json>]"
+              " [--equip-actions <equip_actions.json>] [--verbose]"
+              " [--width N] [--ascii]\n"
               "       swcli <export.json> --optimize <config.json>"
               " --marginal gems|grinds [K]\n"
               "       (--show N : nombre de builds affichés, du meilleur au moins"
@@ -963,7 +591,8 @@ bool parse_options(int argc, char** argv, Options& options, std::string& error) 
             argument == "--optimize" || argument == "--top" ||
             argument == "--sort" ||
             argument == "--name" || argument == "--format" ||
-            argument == "--width" || argument == "--export") {
+            argument == "--width" || argument == "--export" ||
+            argument == "--locks" || argument == "--equip-actions") {
             if (i + 1 >= argc) {
                 error = "valeur manquante pour " + argument;
                 return false;
@@ -985,6 +614,10 @@ bool parse_options(int argc, char** argv, Options& options, std::string& error) 
                     return false;
                 }
                 options.format = value;
+            } else if (argument == "--equip-actions") {
+                options.equip_actions_path = value;
+            } else if (argument == "--locks") {
+                options.locks_path = value;
             } else if (argument == "--export") {
                 options.csv_export_path = value;
             } else if (argument == "--width") {
@@ -1059,6 +692,10 @@ int run(const Options& options) {
                 std::cerr << "Erreur de configuration : " << error << '\n';
             return 2;
         }
+        // Table des verrous (même format que data/user/locks.json du GUI).
+        if (!options.locks_path.empty())
+            solver_config.lock_table =
+                swcore::LockTable::load(options.locks_path, warning);
         const auto mapping = swcore::RuneMapping::load("data/mapping", warning);
         const auto reference =
             swcore::ReferenceDB::load("data/swarfarm/monsters.json", warning);
@@ -1066,25 +703,24 @@ int run(const Options& options) {
         const auto effects = swcore::SetEffects::load(
             "data/mapping/set_effects.json", warning);
         auto runes = swcore::load_runes(options.export_path, mapping, warning);
-        for (auto& rune : runes) {
-            if (rune.occupancy == swcore::RuneOccupancy::Inventory) {
-                rune.source_name = "Inventaire";
-                continue;
+        {
+            // État du compte : export, puis équipement virtuel (--equip-actions,
+            // même format et même fonction que le GUI).
+            swcore::AccountState state{std::move(monsters), std::move(runes), {}};
+            swcore::name_rune_sources(state, reference);
+            for (auto& monster : state.monsters)
+                monster.stats = swcore::calculate_monster_stats(monster, effects);
+            if (!options.equip_actions_path.empty()) {
+                auto log = swcore::EquipLog::load(options.equip_actions_path, warning);
+                const auto wizard = swcore::read_wizard_id(options.export_path);
+                if (log.wizard_id != 0 && wizard != 0 && log.wizard_id != wizard)
+                    warning("Equip: --equip-actions belongs to another account; ignored");
+                else
+                    state = swcore::effective_state(state, log.actions, effects, reference);
             }
-            const auto owner = std::find_if(
-                monsters.begin(), monsters.end(),
-                [&](const swcore::AccountMonster& monster) {
-                    return monster.unit_id == rune.source_unit_id;
-                });
-            if (owner != monsters.end()) {
-                const auto* name = reference.find(owner->unit_master_id);
-                rune.source_name =
-                    (name ? name->name : std::string{"Monstre"}) + " (" +
-                    std::to_string(owner->unit_id) + ")";
-            }
+            monsters = std::move(state.monsters);
+            runes = std::move(state.runes);
         }
-        for (auto& monster : monsters)
-            monster.stats = swcore::calculate_monster_stats(monster, effects);
         if (monsters.empty()) {
             std::cerr << "Aucun monstre cible dans l'export.\n";
             return 1;
@@ -1115,9 +751,10 @@ int run(const Options& options) {
                                    : 10;
         solver_config.limits.detailed_builds =
             std::max(solver_config.limits.detailed_builds, show_count);
-        const auto solver = swcore::solve_runes(
-            *target, runes, effects, solver_config, "data/mapping",
-            warning);
+        // Même API que le GUI : recherche asynchrone, attendue ici.
+        swcore::AsyncSolver async;
+        async.start(*target, runes, effects, solver_config, "data/mapping", warning);
+        const auto solver = async.wait();
         if (!options.csv_export_path.empty() &&
             !export_builds_csv(options.csv_export_path, solver)) {
             std::cerr << "Erreur: impossible d'écrire "

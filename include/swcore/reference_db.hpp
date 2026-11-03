@@ -31,6 +31,7 @@ struct ReferenceMonster {
     int com2us_id = 0;
     std::string name;
     Element element = Element::Unknown;
+    std::string archetype;  // SWARFARM "archetype" (Attack, HP...), vide si absent
     int natural_stars = 0;
     int base_stars = 0;
     int awaken_level = 0;

@@ -34,6 +34,7 @@ struct Candidate {
     int cost = 0;      // nombre de nouvelles meules simulées
     int gem_cost = 0;  // nouvelle gemme simulée (0 ou 1)
     int variant = 0;   // variante de craft (0 = rune telle quelle)
+    double efficiency = 0;  // efficacité de la variante (projection et craft inclus)
 };
 
 // Hypothèses de craft, isolées pour être changées facilement.
@@ -64,7 +65,25 @@ struct SearchState {
     std::array<int, 6> selected_variant{};
     int cost_used = 0;  // meules simulées déjà engagées
     int gems_used = 0;  // gemmes simulées déjà engagées
+    // Annulation / progression (API asynchrone) ; builds des scénarios précédents.
+    const SolveControl* control = nullptr;
+    Clock::time_point run_started{};
+    std::uint64_t found_before = 0;
 };
+
+std::uint64_t builds_found(const SearchState& state) {
+    return state.all_mode ? state.report.valid_builds : state.report.builds.size();
+}
+
+void publish_progress(const SearchState& state, Clock::time_point now) {
+    if (!state.control || !state.control->progress) return;
+    auto& progress = *state.control->progress;
+    progress.elapsed_ms.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  now - state.run_started)
+                                  .count());
+    progress.builds_found.store(state.found_before + builds_found(state));
+    if (state.report.incomplete) progress.incomplete.store(true);
+}
 
 bool all_builds_mode(const SolverConfig& config) {
     return config.limits.top_n == 0;
@@ -96,6 +115,68 @@ bool set_allowed(const Rune& rune, const SetScenario& scenario) {
         [&](const SetRequirement& requirement) {
             return rune.set_id == requirement.set_id;
         });
+}
+
+// Filtres du pool, dans l'ordre des diagnostics : 0 = exclue (verrouillée,
+// hors inventaire si demandé, niveau) ; 1 = niveau ok ; 2 = étoiles ok ;
+// 3 = stat principale ok ; 4 = set du scénario ok (candidate).
+// Avant ces étapes : -1 = exclue par verrou (réservée à un autre monstre ou à
+// personne) ; -2 = slot figé sur une autre rune (keep_target_locked). La rune
+// figée d'un slot passe outre les filtres de niveau et d'étoiles.
+constexpr int kLockExcluded = -1;
+constexpr int kFrozenSlotOther = -2;
+
+int filter_stage(const Rune& source, int slot, const SolverConfig& config,
+                 const SetScenario& scenario, std::uint64_t target_unit_id,
+                 const std::optional<std::uint64_t>& frozen_rune) {
+    if (config.locks.mode == LockMode::Respect &&
+        !rune_usable_by(config.lock_table, source, target_unit_id))
+        return kLockExcluded;
+    if (frozen_rune && source.rune_id != *frozen_rune) return kFrozenSlotOther;
+    if (locked(source, config.pool) ||
+        (config.pool.inventory_only && source.occupancy != RuneOccupancy::Inventory))
+        return 0;
+    if (!frozen_rune) {
+        if (source.upgrade_level < config.pool.minimum_rune_level) return 0;
+        if (source.stars < config.pool.minimum_stars) return 1;
+    }
+    if (!main_stat_allowed(source, slot, config)) return 2;
+    if (!set_allowed(source, scenario)) return 3;
+    return 4;
+}
+
+// keep_target_locked : rune figée par slot (verrouillée pour le monstre cible ;
+// à défaut d'unicité, celle qu'il équipe).
+std::array<std::optional<std::uint64_t>, 6> frozen_slots(
+    const std::vector<Rune>& pool, const SolverConfig& config, std::uint64_t target_unit_id,
+    std::vector<std::string>* duplicates = nullptr) {
+    std::array<std::optional<std::uint64_t>, 6> frozen{};
+    if (config.locks.mode != LockMode::Respect || !config.locks.keep_target_locked ||
+        target_unit_id == 0)
+        return frozen;
+    std::array<int, 6> count{};
+    std::string name;
+    for (const auto& rune : pool) {
+        if (rune.slot < 1 || rune.slot > 6) continue;
+        const Lock* lock = config.lock_table.find(LockKind::Rune, rune.rune_id);
+        if (!lock || lock->reserved_for != target_unit_id) continue;
+        if (name.empty()) name = lock->monster_name;
+        const auto index = static_cast<std::size_t>(rune.slot - 1);
+        ++count[index];
+        auto& slot = frozen[index];
+        // Plusieurs runes réservées : celle qu'il équipe (au plus une par
+        // slot), sinon la première rencontrée.
+        if (!slot || rune_owner(rune) == target_unit_id) slot = rune.rune_id;
+    }
+    if (duplicates)
+        for (std::size_t i = 0; i < 6; ++i)
+            if (count[i] > 1)
+                duplicates->push_back(
+                    "slot " + std::to_string(i + 1) + " : " + std::to_string(count[i]) +
+                    " runes verrouillées pour " +
+                    (name.empty() ? std::to_string(target_unit_id) : name) +
+                    ", figé : " + std::to_string(*frozen[i]));
+    return frozen;
 }
 
 bool set_scenario_matches(const std::array<Rune, 6>& runes,
@@ -135,10 +216,15 @@ bool within_craft_budget(const SolverConfig& config, int grinds, int gems) {
 // pour la dominance : plus haut = mieux, sauf si une contrainte max ou un poids
 // négatif porte sur la stat (ou une métrique qui en dépend) : il faut alors
 // l'égalité, car plus haut peut être pire.
+// Index 8 : efficacité de la rune (ignorée sauf si la config l'utilise).
 enum class Direction { Higher, Equal, Ignore };
-using Directions = std::array<Direction, 8>;
+constexpr std::size_t kEfficiencyIndex = 8;
+using Directions = std::array<Direction, 9>;
+
+bool is_efficiency_metric(const std::string& name) { return name == "rune_efficiency"; }
 
 std::vector<std::size_t> metric_inputs(const std::string& name) {
+    if (is_efficiency_metric(name)) return {kEfficiencyIndex};
     if (name == "hp" || name == "HP" || name == "PV") return {0};
     if (name == "attack" || name == "ATK" || name == "ATQ") return {1};
     if (name == "defense" || name == "DEF") return {2};
@@ -155,6 +241,15 @@ std::vector<std::size_t> metric_inputs(const std::string& name) {
 Directions stat_directions(const SolverConfig& config) {
     Directions directions;
     directions.fill(Direction::Higher);
+    // Efficacité : comparée seulement si une contrainte ou un poids l'utilise
+    // (sinon la dominance reste celle d'avant, sur les 8 stats).
+    directions[kEfficiencyIndex] = Direction::Ignore;
+    for (const auto& [name, constraint] : config.constraints)
+        if (is_efficiency_metric(name)) directions[kEfficiencyIndex] = Direction::Higher;
+    for (const auto& [name, weight] : config.objective.weights)
+        if (is_efficiency_metric(name)) directions[kEfficiencyIndex] = Direction::Higher;
+    for (const auto& name : config.objective.sort_metrics)
+        if (is_efficiency_metric(name)) directions[kEfficiencyIndex] = Direction::Higher;
     const auto mark = [&](const std::string& name) {
         for (const auto index : metric_inputs(name))
             directions[index] = Direction::Equal;
@@ -170,14 +265,14 @@ Directions stat_directions(const SolverConfig& config) {
 // contraintes, tri) sont ignorées : utilisé entre variantes d'une même rune.
 Directions relevant_directions(const SolverConfig& config) {
     Directions directions = stat_directions(config);
-    std::array<bool, 8> used{};
+    std::array<bool, 9> used{};
     const auto use = [&](const std::string& name) {
         for (const auto index : metric_inputs(name)) used[index] = true;
     };
     for (const auto& [name, constraint] : config.constraints) use(name);
     for (const auto& [name, weight] : config.objective.weights) use(name);
     for (const auto& name : config.objective.sort_metrics) use(name);
-    for (std::size_t k = 0; k < 8; ++k)
+    for (std::size_t k = 0; k < used.size(); ++k)
         if (!used[k]) directions[k] = Direction::Ignore;
     return directions;
 }
@@ -207,6 +302,13 @@ bool dominates_with_cost(const StatValues& left, const Candidate& left_cost,
             if (l[k] < r[k]) return false;
             strictly |= l[k] > r[k];
         }
+    }
+    const auto efficiency = directions[kEfficiencyIndex];
+    if (efficiency == Direction::Equal) {
+        if (left_cost.efficiency != right_cost.efficiency) return false;
+    } else if (efficiency == Direction::Higher) {
+        if (left_cost.efficiency < right_cost.efficiency) return false;
+        strictly |= left_cost.efficiency > right_cost.efficiency;
     }
     return strictly;
 }
@@ -347,6 +449,7 @@ std::vector<Candidate> enumerate_variants(const Rune& rune, int real_level,
                 line.grind = options[bit].value;
                 ++candidate.cost;
             }
+            candidate.efficiency = calculate_rune_efficiency(candidate.rune);
             variants.push_back(std::move(candidate));
         }
     }
@@ -377,6 +480,9 @@ std::vector<Candidate> craft_variants(const Rune& rune, int real_level,
         const auto r = stat_array(totals[b]);
         for (std::size_t k = 0; k < 8; ++k)
             if (directions[k] != Direction::Ignore && l[k] != r[k]) return false;
+        if (directions[kEfficiencyIndex] != Direction::Ignore &&
+            variants[a].efficiency != variants[b].efficiency)
+            return false;
         return true;
     };
     std::vector<Candidate> kept;
@@ -512,8 +618,17 @@ void record_compact(SearchState& state, CompactBuild build) {
 
 
 bool check_budget(SearchState& state) {
-    if (state.config.limits.time_budget_ms <= 0) return false;
     const auto now = Clock::now();
+    if (state.control) {
+        if (state.control->stop.stop_requested()) {
+            state.stopped = true;
+            state.report.incomplete = true;
+            publish_progress(state, now);
+            return true;
+        }
+        publish_progress(state, now);
+    }
+    if (state.config.limits.time_budget_ms <= 0) return false;
     if (now >= state.deadline) {
         state.stopped = true;
         state.report.incomplete = true;
@@ -588,7 +703,9 @@ void insert_build(SearchState& state, SolverBuild build,
         return;
     }
     build.stats = recalculated;
-    build.metrics = calculate_derived_metrics(build.stats.total);
+    build.efficiency = calculate_build_efficiency(build.runes);
+    // L'efficacité est une vraie métrique de recherche (contrainte, poids, tri).
+    build.metrics = calculate_derived_metrics(build.stats.total, build.efficiency);
     for (const auto& [name, constraint] : state.config.constraints) {
         const double value = metric_value(build, name);
         (void)constraint;
@@ -597,7 +714,7 @@ void insert_build(SearchState& state, SolverBuild build,
     }
     if (!constraints_match(build, state.config)) return;
     build.score = score_build(build, state.config.objective);
-    build.efficiency = calculate_build_efficiency(build.runes);
+    build.variants = variants;
     build.grind_cost = 0;
     build.gem_cost = 0;
     for (const auto& rune : build.runes) {
@@ -775,6 +892,10 @@ struct FastContext {
     std::array<std::size_t, 6> choice{};
     int cost_used = 0;  // nouvelles meules engagées dans la branche
     int gems_used = 0;  // nouvelles gemmes engagées dans la branche
+    // Efficacité : somme des runes choisies et sommes max/min des slots restants.
+    double eff_sum = 0;
+    std::array<double, 7> eff_max{};
+    std::array<double, 7> eff_min{};
 };
 
 // Stats totales (hors compétences d'invocateur) à partir de la somme V des
@@ -811,6 +932,24 @@ std::optional<double> score_threshold(const FastContext& c) {
     return std::nullopt;
 }
 
+// Efficacité du build complet (même calcul que calculate_build_efficiency :
+// somme des runes dans l'ordre des slots 1..6, puis arrondi inférieur).
+double exact_efficiency(const FastContext& c) {
+    std::array<double, 6> by_slot{};
+    for (std::size_t i = 0; i < 6; ++i)
+        by_slot[static_cast<std::size_t>(c.s.slot_order[i])] =
+            c.level[i][c.choice[i]].efficiency;
+    double sum = 0;
+    for (const double value : by_slot) sum += value;
+    return std::floor(sum / 6.0 * 100.0) / 100.0;
+}
+
+// Borne d'efficacité d'une branche ; la marge couvre l'ordre de sommation.
+double efficiency_bound(double sum, bool upper) {
+    const double margin = upper ? 1e-7 : -1e-7;
+    return std::floor(sum / 6.0 * 100.0 + margin) / 100.0;
+}
+
 // 0 = continuer ; 1 = coupe par contrainte ; 2 = coupe par objectif.
 int bound_cut(const FastContext& c, const Vec& cur, std::size_t placed) {
     if (!c.use_bounds) return 0;
@@ -822,10 +961,10 @@ int bound_cut(const FastContext& c, const Vec& cur, std::size_t placed) {
     }
     const StatValues sh = totals_from(c, hi);
     const StatValues sl = totals_from(c, lo);
-    const DerivedMetrics dh =
-        c.need_derived ? calculate_derived_metrics(sh) : DerivedMetrics{};
-    const DerivedMetrics dl =
-        c.need_derived ? calculate_derived_metrics(sl) : DerivedMetrics{};
+    DerivedMetrics dh = c.need_derived ? calculate_derived_metrics(sh) : DerivedMetrics{};
+    DerivedMetrics dl = c.need_derived ? calculate_derived_metrics(sl) : DerivedMetrics{};
+    dh.rune_efficiency = efficiency_bound(c.eff_sum + c.eff_max[placed], true);
+    dl.rune_efficiency = efficiency_bound(c.eff_sum + c.eff_min[placed], false);
     for (const auto& crit : c.constraints) {
         if (crit.minimum && metric_of(crit.id, sh, dh) < *crit.minimum) return 1;
         if (crit.maximum && metric_of(crit.id, sl, dl) > *crit.maximum) return 1;
@@ -847,8 +986,10 @@ void fast_leaf(FastContext& c, const Vec& v) {
     SearchState& s = c.s;
     if (budget_tick(s)) return;
     const StatValues total = totals_from(c, v);
-    const DerivedMetrics derived =
+    DerivedMetrics derived =
         c.need_derived ? calculate_derived_metrics(total) : DerivedMetrics{};
+    const double efficiency = exact_efficiency(c);
+    derived.rune_efficiency = efficiency;
     bool valid = true;
     for (std::size_t i = 0; i < c.constraints.size(); ++i) {
         const auto& crit = c.constraints[i];
@@ -877,21 +1018,15 @@ void fast_leaf(FastContext& c, const Vec& v) {
         compact.variants = variants;
         compact.grind_cost = c.cost_used;
         compact.gem_cost = c.gems_used;
-        std::array<double, 6> efficiency{};
-        for (std::size_t i = 0; i < 6; ++i) {
-            const auto slot = static_cast<std::size_t>(s.slot_order[i]);
-            compact.rune_ids[slot] = s.candidates[i][c.choice[i]].rune.rune_id;
-            efficiency[slot] = c.level[i][c.choice[i]].efficiency;
-        }
-        // Même ordre de sommation que calculate_build_efficiency (slots 1..6).
-        double sum = 0;
-        for (const double value : efficiency) sum += value;
+        for (std::size_t i = 0; i < 6; ++i)
+            compact.rune_ids[static_cast<std::size_t>(s.slot_order[i])] =
+                s.candidates[i][c.choice[i]].rune.rune_id;
         compact.total = total;
         compact.score = score;
         compact.effective_hp = c.need_derived
                                    ? derived.effective_hp
                                    : calculate_derived_metrics(total).effective_hp;
-        compact.efficiency = std::floor(sum / 6.0 * 100.0) / 100.0;
+        compact.efficiency = efficiency;
         record_compact(s, compact);
         return;
     }
@@ -949,6 +1084,7 @@ void fast_descend(FastContext& c, std::size_t d, const Vec& cur) {
         c.choice[d] = i;
         c.cost_used += cost;
         c.gems_used += gems;
+        c.eff_sum += r.efficiency;
         if (last) {
             fast_leaf(c, next);
         } else if (const int cut = bound_cut(c, next, d + 1); cut == 0) {
@@ -958,6 +1094,7 @@ void fast_descend(FastContext& c, std::size_t d, const Vec& cur) {
         } else {
             ++s.report.cuts_objective;
         }
+        c.eff_sum -= r.efficiency;
         c.cost_used -= cost;
         c.gems_used -= gems;
         --c.count[si];
@@ -1061,6 +1198,14 @@ bool run_fast_search(SearchState& s) {
                 });
             c.available[t][d] = c.available[t][d + 1] + (present ? 1 : 0);
         }
+        double eff_hi = 0;
+        double eff_lo = std::numeric_limits<double>::max();
+        for (const auto& r : c.level[d]) {
+            eff_hi = std::max(eff_hi, r.efficiency);
+            eff_lo = std::min(eff_lo, r.efficiency);
+        }
+        c.eff_max[d] = c.eff_max[d + 1] + eff_hi;
+        c.eff_min[d] = c.eff_min[d + 1] + eff_lo;
     }
     for (const auto& [name, constraint] : s.config.constraints) {
         c.constraints.push_back(
@@ -1080,7 +1225,8 @@ bool run_fast_search(SearchState& s) {
     }
     {
         const StatValues upper = totals_from(c, c.vmax[0]);
-        const DerivedMetrics derived = calculate_derived_metrics(upper);
+        DerivedMetrics derived = calculate_derived_metrics(upper);
+        derived.rune_efficiency = efficiency_bound(c.eff_max[0], true);
         for (const auto& [name, constraint] : s.config.constraints)
             if (constraint.minimum)
                 s.report.constraint_upper_bounds[name] =
@@ -1326,6 +1472,7 @@ void finalize_builds(SearchState& state) {
                 return;
             }
             build.runes[i] = it->second->rune;
+            build.variants[i] = compact.variants[i];
         }
         build.scenario = state.report.name;
         build.grind_cost = compact.grind_cost;
@@ -1335,9 +1482,9 @@ void finalize_builds(SearchState& state) {
             state.report.validation_error = "internal stat recalculation mismatch";
             return;
         }
-        build.metrics = calculate_derived_metrics(build.stats.total);
-        build.score = score_build(build, state.config.objective);
         build.efficiency = calculate_build_efficiency(build.runes);
+        build.metrics = calculate_derived_metrics(build.stats.total, build.efficiency);
+        build.score = score_build(build, state.config.objective);
         complete(build);
         state.report.builds.push_back(std::move(build));
     }
@@ -1362,6 +1509,83 @@ std::vector<RuneCraftVariant> list_craft_variants(
         result.push_back({std::move(candidate.rune), candidate.cost,
                           candidate.gem_cost});
     return result;
+}
+
+std::array<std::size_t, 6> count_candidate_runes(const std::vector<Rune>& pool,
+                                                 const SolverConfig& config) {
+    std::vector<SetScenario> scenarios = config.scenarios;
+    if (scenarios.empty()) scenarios.push_back({"", {}, true});
+    const std::uint64_t target = config.pool.target_unit_id.value_or(0);
+    const auto frozen = frozen_slots(pool, config, target);
+    std::array<std::size_t, 6> counts{};
+    for (const auto& rune : pool) {
+        if (rune.slot < 1 || rune.slot > 6) continue;
+        const auto& frozen_rune = frozen[static_cast<std::size_t>(rune.slot - 1)];
+        const bool candidate = std::any_of(
+            scenarios.begin(), scenarios.end(), [&](const SetScenario& scenario) {
+                return filter_stage(rune, rune.slot, config, scenario, target,
+                                    frozen_rune) == 4;
+            });
+        if (candidate) ++counts[static_cast<std::size_t>(rune.slot - 1)];
+    }
+    return counts;
+}
+
+std::size_t count_lock_excluded_runes(const std::vector<Rune>& pool,
+                                      const SolverConfig& config) {
+    if (config.locks.mode != LockMode::Respect) return 0;
+    const std::uint64_t target = config.pool.target_unit_id.value_or(0);
+    return static_cast<std::size_t>(
+        std::count_if(pool.begin(), pool.end(), [&](const Rune& rune) {
+            return !rune_usable_by(config.lock_table, rune, target);
+        }));
+}
+
+std::optional<SolverBuild> expand_build(const AccountMonster& target,
+                                        const std::vector<Rune>& pool,
+                                        const SetEffects& effects,
+                                        const SolverConfig& config,
+                                        const std::filesystem::path& mapping_directory,
+                                        const CompactBuild& compact,
+                                        const std::string& scenario) {
+    const auto projected =
+        project_pool(pool, config.pool.projection_level, mapping_directory, {});
+    const auto grind_ranges =
+        config.grindstones.empty()
+            ? CraftRanges{}
+            : load_craft_ranges(mapping_directory / "grindstone.json");
+    const auto gem_ranges =
+        config.gems.empty()
+            ? CraftRanges{}
+            : load_craft_ranges(mapping_directory / "enchanted_gem.json");
+    SolverBuild build;
+    build.scenario = scenario;
+    for (std::size_t slot = 0; slot < 6; ++slot) {
+        const auto it = std::find_if(pool.begin(), pool.end(), [&](const Rune& rune) {
+            return rune.rune_id == compact.rune_ids[slot];
+        });
+        if (it == pool.end()) return std::nullopt;
+        const auto index = static_cast<std::size_t>(it - pool.begin());
+        const auto variants =
+            enumerate_variants(with_source_name(projected[index]), it->upgrade_level,
+                               config, grind_ranges, gem_ranges);
+        const auto variant = static_cast<std::size_t>(compact.variants[slot]);
+        if (variant >= variants.size()) return std::nullopt;
+        build.runes[slot] = variants[variant].rune;
+        build.variants[slot] = compact.variants[slot];
+        build.actual_runes[slot] = with_source_name(*it);
+        if (build.actual_runes[slot].upgrade_level != build.runes[slot].upgrade_level)
+            build.projection_level = config.pool.projection_level;
+    }
+    build.stats = build_stats(target, build.runes, effects);
+    build.efficiency = calculate_build_efficiency(build.runes);
+    build.metrics = calculate_derived_metrics(build.stats.total, build.efficiency);
+    build.score = score_build(build, config.objective);
+    for (const auto& rune : build.runes) {
+        build.grind_cost += grind_cost(rune);
+        build.gem_cost += gem_cost(rune);
+    }
+    return build;
 }
 
 BuildReport make_build_report(const AccountMonster& target,
@@ -1411,7 +1635,20 @@ SolverReport solve_runes(const AccountMonster& target,
                          const SolverConfig& config,
                          const std::filesystem::path& mapping_directory,
                          WarningSink warnings) {
+    return solve_runes(target, pool, set_effects, config, mapping_directory,
+                       std::move(warnings), SolveControl{});
+}
+
+SolverReport solve_runes(const AccountMonster& target,
+                         const std::vector<Rune>& pool,
+                         const SetEffects& set_effects,
+                         const SolverConfig& config,
+                         const std::filesystem::path& mapping_directory,
+                         WarningSink warnings,
+                         const SolveControl& control) {
     SolverReport report;
+    const auto run_started = Clock::now();
+    std::uint64_t found_before = 0;
                          std::vector<SetScenario> scenarios = config.scenarios;
                          if (scenarios.empty() && !config.allowed_sets.empty()) {
                              for (const int primary : config.allowed_sets) {
@@ -1457,6 +1694,15 @@ SolverReport solve_runes(const AccountMonster& target,
             : load_craft_ranges(mapping_directory / "enchanted_gem.json", warnings);
     const Directions directions = stat_directions(config);
     const Directions variant_directions = relevant_directions(config);
+    std::vector<std::string> frozen_duplicates;
+    const auto frozen = frozen_slots(pool, config, target.unit_id, &frozen_duplicates);
+    if (!frozen_duplicates.empty()) {
+        // Un seul avertissement groupé pour tous les slots concernés.
+        std::string list;
+        for (const auto& line : frozen_duplicates) list += (list.empty() ? "" : " ; ") + line;
+        warn(warnings, "Solver: " + list);
+    }
+    std::vector<std::string> skipped_scenarios;  // impossibles à cause des slots figés
     for (const auto& scenario : scenarios) {
         if (scenario.any_set)
             warn(warnings,
@@ -1472,6 +1718,14 @@ SolverReport solve_runes(const AccountMonster& target,
         state.report.name = scenario.name.empty() ? "scenario" : scenario.name;
         state.all_mode = all_builds_mode(config);
         state.report.all_builds_mode = state.all_mode;
+        state.control = &control;
+        state.run_started = run_started;
+        state.found_before = found_before;
+        if (control.stop.stop_requested()) {
+            // Annulé avant ce scénario : on garde les résultats déjà obtenus.
+            if (control.progress) control.progress->incomplete.store(true);
+            break;
+        }
         for (int slot = 1; slot <= 6; ++slot) {
             std::vector<Candidate> candidates;
             auto& diagnostic = state.report.slot_filters[static_cast<std::size_t>(slot - 1)];
@@ -1485,18 +1739,17 @@ SolverReport solve_runes(const AccountMonster& target,
                     ++diagnostic.target_equipped;
                 else
                     ++diagnostic.other_equipped;
-                if (locked(source, config.pool) ||
-                    (config.pool.inventory_only &&
-                     source.occupancy != RuneOccupancy::Inventory))
-                    continue;
-                if (source.upgrade_level < config.pool.minimum_rune_level)
-                    continue;
-                ++diagnostic.after_level;
-                if (source.stars < config.pool.minimum_stars) continue;
-                ++diagnostic.after_stars;
-                if (!main_stat_allowed(source, slot, config)) continue;
-                ++diagnostic.after_main_stat;
-                if (!set_allowed(source, scenario)) continue;
+                const int stage =
+                    filter_stage(source, slot, config, scenario, target.unit_id,
+                                 frozen[static_cast<std::size_t>(slot - 1)]);
+                if (stage == kLockExcluded) {
+                    ++diagnostic.locked_out;
+                    ++state.report.lock_excluded;
+                }
+                if (stage >= 1) ++diagnostic.after_level;
+                if (stage >= 2) ++diagnostic.after_stars;
+                if (stage >= 3) ++diagnostic.after_main_stat;
+                if (stage < 4) continue;
                 ++diagnostic.after_set;
                 const Rune real = with_source_name(source);
                 for (auto& candidate : craft_variants(
@@ -1542,11 +1795,23 @@ SolverReport solve_runes(const AccountMonster& target,
             state.report.candidates_after += diagnostic.after_pruning;
             state.candidates.push_back(std::move(candidates));
         }
+        // Slot figé dont la rune verrouillée ne convient pas au scénario : écarté.
+        for (std::size_t slot = 0; slot < state.candidates.size(); ++slot)
+            if (frozen[slot] && state.candidates[slot].empty()) {
+                state.report.skipped_reason =
+                    "slot " + std::to_string(slot + 1) +
+                    " : la rune verrouillée figée (" + std::to_string(*frozen[slot]) +
+                    ") ne convient pas (set ou stat principale)";
+                skipped_scenarios.push_back(state.report.name + " (" +
+                                            state.report.skipped_reason + ")");
+                break;
+            }
         if (state.stopped) {
             state.report.elapsed_ms =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     Clock::now() - state.started)
                     .count();
+            publish_progress(state, Clock::now());
             report.scenarios.push_back(std::move(state.report));
             if (warnings) {
                 const auto& completed = report.scenarios.back();
@@ -1588,6 +1853,8 @@ SolverReport solve_runes(const AccountMonster& target,
                 .count();
         if (state.report.builds.empty())
             report.limiting_constraints.push_back(state.report.name);
+        publish_progress(state, Clock::now());
+        found_before += builds_found(state);
         report.scenarios.push_back(std::move(state.report));
         if (warnings) {
             const auto& completed = report.scenarios.back();
@@ -1603,6 +1870,12 @@ SolverReport solve_runes(const AccountMonster& target,
                      " elapsed_ms=" + std::to_string(completed.elapsed_ms) +
                      (completed.incomplete ? " incomplete" : ""));
         }
+    }
+    if (!skipped_scenarios.empty()) {
+        std::string list;
+        for (const auto& name : skipped_scenarios) list += (list.empty() ? "" : "; ") + name;
+        warn(warnings, "Solver: " + std::to_string(skipped_scenarios.size()) +
+                           " scenario(s) impossible with the frozen locked runes: " + list);
     }
     return report;
 }
