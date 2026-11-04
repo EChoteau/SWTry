@@ -8,6 +8,9 @@
   "element_advantage_damage_bonus": 0,
   "max_hp_damage_vs_boss": "full",
   "tie_break": "config_order",
+  "boss_counter_after_attacks": 7,
+  "speed_tower_percent": null,
+  "combat_speed_rounding": "ceil",
   "per_monster": {
     "Teshar": { "tempest_multiplier": null, "tempest_cooldown": 3, "tempest_every_attack": false }
   }

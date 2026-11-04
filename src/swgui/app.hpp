@@ -8,12 +8,17 @@
 #include "swcore/solve_async.hpp"
 #include "swcore/solver.hpp"
 #include "swcore/solver_config.hpp"
+#include "swcore/team_analysis.hpp"
+#include "swcore/team_optimizer.hpp"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
+#include <memory>
+#include <set>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -170,6 +175,14 @@ private:
     void render_constraints();
     void render_objective();
     void render_craft(bool gems);
+    // Menus communs (mode, rareté) appliqués tout de suite à toutes les lignes.
+    struct CraftGlobal {
+        int mode = 2;    // 0 Off, 1 Min, 2 Max
+        int rarity = 5;  // 1-5
+    };
+    void render_craft_rules(swcore::SolverConfig& config, bool gems, CraftGlobal& global);
+    void render_craft_limits(bool gems);
+    std::array<CraftGlobal, 2> craft_global_{};  // Optimiseur : meules, gemmes
     void render_limits();
     void render_run_controls();
     void start_search();
@@ -273,6 +286,50 @@ private:
     int dungeon_level_id_ = 0;
     std::string dungeon_team_id_;
     char dungeon_filter_[64] = {};
+    // Réglages d'une team (data/user/team_settings.json) : sets choisis (Set 1
+    // / Set 2 conseillés, Set 3 personnalisé), verrous, meules et gemmes.
+    struct TeamUiSettings {
+        std::string active_set = "set1";
+        std::map<std::string, std::vector<std::string>> set3;
+        std::set<std::string> locked;
+        bool grind_on = false;
+        bool gem_on = false;
+        swcore::SolverConfig craft;           // grindstones / gems seulement
+        std::array<CraftGlobal, 2> global{};  // menus communs meules / gemmes
+    };
+    std::map<std::string, TeamUiSettings> team_settings_;
+    bool team_settings_loaded_ = false;
+    TeamUiSettings& team_settings(const std::string& team_id);
+    void save_team_settings();
+    std::map<std::string, std::vector<std::string>> team_sets(
+        const swcore::TeamConfig& team, const TeamUiSettings& settings) const;
+    void render_team_settings(const swcore::TeamConfig& team);
+
+    // Optimisation de team en arrière-plan (glouton + descente coordonnée).
+    struct TeamOptimization {
+        std::string team_id;
+        int level_id = 0;
+        std::mutex mutex;
+        std::string progress;
+        std::optional<swcore::TeamOptimizerResult> result;
+        std::atomic<bool> running{false};
+        std::jthread thread;  // en dernier : arrêté et joint avant le reste
+    };
+    std::unique_ptr<TeamOptimization> team_opt_;
+    bool team_show_optimized_ = false;
+    int team_opt_revision_ = 0;  // incrémenté à chaque optimisation (cache de l'analyse)
+    void start_team_optimization(const DataStore::DungeonState& state,
+                                 const swcore::TeamConfig& team);
+    void render_team_optimization(const DataStore::DungeonState& state,
+                                  const swcore::TeamConfig& team);
+
+    // VIT de combat saisies à la main ("team/monstre" -> VIT), non enregistrées.
+    std::map<std::string, int> dungeon_manual_speeds_;
+    // Analyse de la team affichée, recalculée quand ses entrées changent.
+    std::optional<swcore::TeamAnalysis> team_analysis_;
+    std::string team_analysis_key_;
+    void render_team_analysis(const DataStore::DungeonState& state,
+                              const swcore::TeamConfig& team);
 
     std::optional<Toast> toast_;
     // Page Équipement et verrous.

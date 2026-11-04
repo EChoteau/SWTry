@@ -240,6 +240,7 @@ std::vector<std::size_t> metric_inputs(const std::string& name) {
     if (name == "accuracy" || name == "ACC") return {7};
     if (name == "effective_hp" || name == "effective_hp_broken_def") return {0, 2};
     if (name == "expected_damage") return {1, 4, 5};
+    if (name == "attack_crit_damage") return {1, 5};
     return {};
 }
 
@@ -537,6 +538,9 @@ double metric_value(const SolverBuild& build, const std::string& name) {
         return build.metrics.effective_hp_broken_def;
     if (name == "expected_damage") return build.metrics.expected_damage;
     if (name == "rune_efficiency") return build.metrics.rune_efficiency;
+    // ATQ x (1 + DC) : objectif des nukers (optimiseur de donjon).
+    if (name == "attack_crit_damage")
+        return build.stats.total.attack * (1.0 + build.stats.total.crit_damage / 100.0);
     return 0;
 }
 
@@ -872,7 +876,8 @@ using Vec = std::array<std::int64_t, 8>;
 
 enum class MetricId {
     None, Hp, Attack, Defense, Speed, CritRate, CritDamage, Resistance,
-    Accuracy, EffectiveHp, EffectiveHpBrokenDef, ExpectedDamage, RuneEfficiency
+    Accuracy, EffectiveHp, EffectiveHpBrokenDef, ExpectedDamage, RuneEfficiency,
+    AttackCritDamage
 };
 
 MetricId metric_id(const std::string& name) {
@@ -888,6 +893,7 @@ MetricId metric_id(const std::string& name) {
     if (name == "effective_hp_broken_def") return MetricId::EffectiveHpBrokenDef;
     if (name == "expected_damage") return MetricId::ExpectedDamage;
     if (name == "rune_efficiency") return MetricId::RuneEfficiency;
+    if (name == "attack_crit_damage") return MetricId::AttackCritDamage;
     return MetricId::None;
 }
 
@@ -910,6 +916,7 @@ double metric_of(MetricId id, const StatValues& s, const DerivedMetrics& d) {
     case MetricId::EffectiveHpBrokenDef: return d.effective_hp_broken_def;
     case MetricId::ExpectedDamage: return d.expected_damage;
     case MetricId::RuneEfficiency: return d.rune_efficiency;
+    case MetricId::AttackCritDamage: return s.attack * (1.0 + s.crit_damage / 100.0);
     default: return 0;
     }
 }

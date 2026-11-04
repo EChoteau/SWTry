@@ -58,6 +58,7 @@ std::optional<TeamConfig> parse_team(const json& root, const std::filesystem::pa
     team.dungeon_id = int_or(root, "dungeon_id");
     team.level_ids = ints(root, "level_ids");
     team.leader = string_or(root, "leader");
+    team.boss = string_or(root, "boss");
     team.notes = string_or(root, "notes");
     if (const auto it = root.find("monsters"); it != root.end() && it->is_array())
         for (const auto& value : *it) {

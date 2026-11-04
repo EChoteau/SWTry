@@ -48,7 +48,10 @@ add_library(swcore STATIC
     src/swcore/locks.cpp
     src/swcore/equip.cpp
     src/swcore/dungeon.cpp
-    src/swcore/team_config.cpp)
+    src/swcore/team_config.cpp
+    src/swcore/atb.cpp
+    src/swcore/team_analysis.cpp
+    src/swcore/team_optimizer.cpp)
 target_include_directories(swcore
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(swcore
@@ -119,7 +122,8 @@ if(SW_BUILD_GUI)
         src/swgui/app_locks.cpp
         src/swgui/app_equip.cpp
         src/swgui/gui_logic.cpp
-        src/swgui/app_dungeons.cpp)
+        src/swgui/app_dungeons.cpp
+        src/swgui/app_teams.cpp)
     target_include_directories(swgui SYSTEM PRIVATE ${pfd_SOURCE_DIR})
     target_link_libraries(swgui PRIVATE swcore imgui project_warnings)
     if(WIN32)

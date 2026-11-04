@@ -42,6 +42,8 @@ struct TeamConfig {
     int dungeon_id = 0;
     std::vector<int> level_ids;
     std::string leader;  // nom d'un monstre de la team ("" : aucun)
+    // Nom SWARFARM du boss dans la dernière vague ("" : premier ennemi de la vague).
+    std::string boss;
     std::vector<TeamMonster> monsters;
     std::vector<ScriptStep> boss_script;
     // "set1" / "set2" -> monstre -> sets conseillés (noms de rune_sets.json).

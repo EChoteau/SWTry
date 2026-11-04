@@ -4,6 +4,7 @@
   "dungeon_id": 8001,
   "level_ids": [685],
   "leader": "Teshar",
+  "boss": "Ancient Giant",
   "monsters": [
     { "name": "Prilea",     "swarfarm_id": 372,  "role": "speed_anchor", "priority": 1 },
     { "name": "Konamiya",   "swarfarm_id": 56,   "role": "support",      "priority": 2 },

@@ -588,33 +588,40 @@ void App::render_objective() {
 void App::render_craft(bool gems) {
     if (!section(gems ? "Gemmes" : "Meules")) return;
     ImGui::PushID(gems ? "gems" : "grinds");
-    auto& rules = gems ? config_.gems : config_.grindstones;
+    render_craft_rules(config_, gems, craft_global_[gems ? 1 : 0]);
+    render_craft_limits(gems);
+    ImGui::PopID();
+}
+
+// Règles par stat (meules ou gemmes) avec un réglage commun : choisir un mode
+// ou une rareté dans les menus communs l'applique tout de suite à toutes les
+// lignes ; chaque ligne reste modifiable ensuite (valeur exacte, etc.).
+void App::render_craft_rules(swcore::SolverConfig& config, bool gems, CraftGlobal& global) {
+    auto& rules = gems ? config.gems : config.grindstones;
     const auto& ranges = gems ? gem_ranges_ : grind_ranges_;
     std::vector<int> stats;
     for (const auto& [stat, by_rarity] : ranges)
         if (gems || swcore::is_grindable_stat(stat)) stats.push_back(stat);
 
-    // Réglage commun appliqué à toutes les stats.
-    static int all_mode[2] = {2, 2};
-    static int all_rarity[2] = {4, 4};
-    const int which = gems ? 1 : 0;
+    const auto apply_all = [&] {
+        rules.clear();
+        if (global.mode != 0)
+            for (const int stat : stats)
+                rules[stat] = {static_cast<swcore::GrindstoneMode>(global.mode), global.rarity, 0};
+    };
+    ImGui::TextUnformatted("Toutes les stats :");
+    ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
-    ImGui::Combo("##all_mode", &all_mode[which], "Off\0Min\0Max\0");
+    if (ImGui::Combo("##all_mode", &global.mode, "Off\0Min\0Max\0")) apply_all();
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
-    if (ImGui::BeginCombo("##all_rarity", rarity_label(all_rarity[which] + 1))) {
+    if (ImGui::BeginCombo("##all_rarity", rarity_label(global.rarity))) {
         for (int r = 1; r <= 5; ++r)
-            if (ImGui::Selectable(rarity_label(r), all_rarity[which] + 1 == r))
-                all_rarity[which] = r - 1;
+            if (ImGui::Selectable(rarity_label(r), global.rarity == r)) {
+                global.rarity = r;
+                apply_all();
+            }
         ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Appliquer à toutes les stats")) {
-        rules.clear();
-        if (all_mode[which] != 0)
-            for (const int stat : stats)
-                rules[stat] = {static_cast<swcore::GrindstoneMode>(all_mode[which]),
-                               all_rarity[which] + 1, 0};
     }
     ImGui::TextColored(color::muted, gems ? "Stats autorisées pour la gemme (par stat)."
                                           : "Stats meulables : PV, ATQ, DEF (fixe et %%), VIT.");
@@ -672,7 +679,10 @@ void App::render_craft(bool gems) {
         }
         ImGui::EndTable();
     }
+}
 
+// Plafonds (max_new_*), regem et niveau minimum de craft de l'Optimiseur.
+void App::render_craft_limits(bool gems) {
     // Gemmes : plafond visible. Meules : meulage complet par défaut ; le plafond
     // (max_new_grinds) est rangé dans "Avancé", replié.
     const bool show_limit = gems || ImGui::TreeNode("Avancé");
@@ -705,7 +715,6 @@ void App::render_craft(bool gems) {
                         &config_.craft_min_level);
         config_.craft_min_level = std::clamp(config_.craft_min_level, 0, 15);
     }
-    ImGui::PopID();
 }
 
 void App::render_limits() {

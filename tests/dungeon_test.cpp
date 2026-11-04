@@ -9,6 +9,7 @@
 #include "swcore/team_config.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace {
@@ -166,4 +167,350 @@ TEST_CASE("Mechanics: values by dotted key, null means unverified") {
     CHECK(std::find(unknown.begin(), unknown.end(), "per_monster.Teshar.tempest_multiplier") !=
           unknown.end());
     CHECK_FALSE(swcore::Mechanics::parse("pas du json").loaded());
+}
+
+// ---------------------------------------------------------------------------
+// Étape 2 : ATB, fenêtres de VIT, taux critique cible.
+// ---------------------------------------------------------------------------
+
+#include "swcore/atb.hpp"
+#include "swcore/team_analysis.hpp"
+
+namespace {
+
+// Référence GB12 : ordre de départage = leader (Teshar), puis la team, puis la
+// vague du boss (Géant, tour gauche, tour droite).
+std::vector<swcore::AtbUnit> reference_units() {
+    return {{"Teshar", true, 167, false},     {"Prilea", true, 226, false},
+            {"Konamiya", true, 167, false},   {"Luna", true, 155, false},
+            {"Homunculus", true, 153, false}, {"Giant", false, 90, true},
+            {"TowerLeft", false, 90, false},  {"TowerRight", false, 121, false}};
+}
+
+std::vector<swcore::AtbStep> reference_script() {
+    using swcore::AtbBoost;
+    return {{1, 3, {}},
+            {0, 2, {}},
+            {2, 2, {{AtbBoost::Target::PreviousAlly, 0, 100}}},
+            {0, 1, {}},
+            {3, 3, {{AtbBoost::Target::Self, 0, 100}}},
+            {4, 1, {}}};
+}
+
+}  // namespace
+
+TEST_CASE("ATB: GB12 reference sequence") {
+    const auto units = reference_units();
+    const auto result = swcore::simulate_atb(units, reference_script());
+    REQUIRE(result.boss_turn.has_value());
+    const std::vector<std::pair<int, std::string>> expected{
+        {7, "Prilea"}, {9, "Teshar"},  {10, "Konamiya"}, {11, "Teshar"},     {12, "Luna"},
+        {13, "Homunculus"}, {14, "Luna"}, {15, "TowerRight"}, {16, "Prilea"}, {17, "Giant"}};
+    REQUIRE(result.turns.size() >= expected.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        INFO("tour " << i);
+        CHECK(result.turns[i].tick == expected[i].first);
+        CHECK(units[result.turns[i].actor].name == expected[i].second);
+    }
+    CHECK(*result.boss_turn == 9);
+    // Barres au moment de jouer (référence : 123,4 / 130,2 / 139,2 / 121,7).
+    CHECK(std::abs(result.turns[3].bar - 123.38) < 0.01);
+    CHECK(std::abs(result.turns[4].bar - 130.2) < 0.01);
+    CHECK(std::abs(result.turns[5].bar - 139.23) < 0.01);
+    CHECK(std::abs(result.turns[6].bar - 121.7) < 0.01);
+    // Script : actions 1 à 6 aux tours 0 à 5 ; Luna t14 = tour en plus.
+    for (int i = 0; i < 6; ++i) CHECK(result.turns[static_cast<std::size_t>(i)].step == i);
+    CHECK(result.turns[6].step == -1);
+    CHECK(result.script_before_boss);
+    CHECK(result.steps_done_before_boss == 6);
+    // Égalité Teshar / Konamiya au tic 9 : signalée.
+    CHECK(result.turns[1].tie);
+    CHECK_FALSE(result.warnings.empty());
+    // Une ligne de barres par tic simulé.
+    CHECK(result.bars.size() >= 17);
+}
+
+TEST_CASE("ATB: boost is an addition, reduction floors at 0") {
+    using swcore::AtbBoost;
+    // A (VIT 100) joue au tic 15 (105) et donne +100 à B (VIT 50 : 52,5 -> 152,5).
+    const std::vector<swcore::AtbUnit> units{{"A", true, 100, false}, {"B", true, 50, false},
+                                             {"Boss", false, 10, true}};
+    std::vector<swcore::AtbStep> script{{0, 1, {{AtbBoost::Target::Ally, 1, 100}}}, {1, 1, {}}};
+    auto result = swcore::simulate_atb(units, script);
+    REQUIRE(result.turns.size() >= 2);
+    CHECK(units[result.turns[1].actor].name == "B");
+    CHECK(result.turns[1].tick == 16);  // 152,5 + 3,5 au tic suivant
+    CHECK(std::abs(result.turns[1].bar - 156.0) < 0.01);
+    // Réduction plus grande que la barre : plancher 0 (B rejoue au tic 15 + 29).
+    script[0].boosts = {{AtbBoost::Target::Ally, 1, -500}};
+    result = swcore::simulate_atb(units, script);
+    REQUIRE(result.turns.size() >= 2);
+    CHECK(units[result.turns[1].actor].name == "A");  // A rejoue avant B
+}
+
+TEST_CASE("Speed windows on the GB12 reference") {
+    const auto units = reference_units();
+    const auto script = reference_script();
+    const auto window = [&](std::size_t unit) { return swcore::speed_window(units, script, unit); };
+    const auto teshar = window(0);
+    const auto prilea = window(1);
+    const auto konamiya = window(2);
+    const auto luna = window(3);
+    const auto homunculus = window(4);
+    for (const auto& w : {teshar, prilea, konamiya, luna, homunculus}) {
+        CHECK(w.found);
+        CHECK(w.current_inside);
+    }
+    CHECK(teshar.min == 167);    // égalité avec Konamiya : le leader joue d'abord
+    CHECK(konamiya.max == 167);  // Konamiya ne doit pas dépasser Teshar
+    CHECK(luna.min == 153);
+    CHECK(luna.max == 160);
+    CHECK(homunculus.max == 155);  // égalité avec Luna tolérée (Luna d'abord)
+    // Prilea 179 : 8 tics x 12,53 = 100,24 -> joue au tic 8, script intact.
+    CHECK(prilea.min == 179);
+}
+
+TEST_CASE("Team analysis GB12: reference speeds give the reference sequence and CR targets") {
+    auto teams = swcore::load_team_configs(kRoot + "/data/teams");
+    const auto it = std::find_if(teams.begin(), teams.end(),
+                                 [](const auto& team) { return team.id == "gb12_speed_teshar"; });
+    REQUIRE(it != teams.end());
+    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/mechanics.json");
+    swcore::TeamAnalysisInput input;
+    input.team = &*it;
+    input.data = &loaded().data;
+    input.dungeon = loaded().data.dungeon(8001);
+    input.level = loaded().data.level(685);
+    input.reference = &loaded().reference;
+    input.mechanics = &mechanics;
+    input.manual_speeds = {{"Prilea", 226}, {"Teshar", 167}, {"Konamiya", 167},
+                           {"Luna", 155},   {"Homunculus", 153}};
+    const auto analysis = swcore::analyze_team(input);
+    REQUIRE(analysis.valid);
+    REQUIRE(analysis.boss);
+    CHECK(analysis.boss->name == "Ancient Giant");
+    // Leader (Teshar) en premier, puis la team, puis la vague du boss.
+    REQUIRE(analysis.units.size() == 8);
+    CHECK(analysis.units[0].name == "Teshar");
+    CHECK(analysis.units[5].boss);
+    CHECK(analysis.atb.script_before_boss);
+    std::vector<std::string> order;
+    for (const auto& turn : analysis.atb.turns) order.push_back(analysis.units[turn.actor].name);
+    REQUIRE(order.size() >= 10);
+    CHECK(order[0] == "Prilea");
+    CHECK(order[2] == "Konamiya");
+    CHECK(order[4] == "Luna");        // Luna S3 : +100 à elle-même (donnée SWARFARM)
+    CHECK(order[6] == "Luna");
+    CHECK(order[9] == "Ancient Giant");
+    CHECK(analysis.atb.turns[9].tick == 17);
+
+    // Taux critique : leader Teshar 33 % (Dungeon), avantage vent > eau 15 %.
+    for (const auto& member : analysis.members) {
+        const auto& name = member.config->name;
+        INFO(name);
+        if (name == "Konamiya") {
+            CHECK_FALSE(member.crit.needed);  // S2 sans dégâts
+            continue;
+        }
+        CHECK(member.crit.needed);
+        CHECK(member.crit.leader == 33);
+        CHECK(member.crit.required_runes == (name == "Luna" ? 52 : 37));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Étape 3 : dégâts, pire / meilleur cas, verdict. Étape 4 : optimisation.
+// ---------------------------------------------------------------------------
+
+#include "swcore/team_optimizer.hpp"
+
+#include <set>
+
+namespace {
+
+swcore::TeamAnalysisInput gb12_input(const swcore::TeamConfig& team,
+                                     const swcore::Mechanics& mechanics) {
+    swcore::TeamAnalysisInput input;
+    input.team = &team;
+    input.data = &loaded().data;
+    input.dungeon = loaded().data.dungeon(8001);
+    input.level = loaded().data.level(685);
+    input.reference = &loaded().reference;
+    input.mechanics = &mechanics;
+    return input;
+}
+
+swcore::TeamConfig gb12_team() {
+    auto teams = swcore::load_team_configs(kRoot + "/data/teams");
+    for (auto& team : teams)
+        if (team.id == "gb12_speed_teshar") return team;
+    FAIL("team GB12 absente");
+    return {};
+}
+
+}  // namespace
+
+TEST_CASE("Skill formulas: SWARFARM expressions and skill-up bonus") {
+    std::vector<std::string> unknown;
+    const std::map<std::string, double> vars{{"ATK", 1000}, {"Target Current HP %", 1.0},
+                                             {"Target MAX HP", 200000}, {"DEF", 500}};
+    CHECK(swcore::evaluate_skill_formula("{ATK}*(4.0*{Target Current HP %} + 5.0)", vars) == 9000);
+    CHECK(swcore::evaluate_skill_formula("7.2*{ATK} + 0.15*{Target MAX HP}", vars) == 37200);
+    CHECK(swcore::evaluate_skill_formula("3.7*{ATK} - 15", vars) == 3685);
+    CHECK(swcore::evaluate_skill_formula("1.8*{ATK} + 2.5*{DEF}", vars) == 3050);
+    CHECK(swcore::evaluate_skill_formula("2*{SPD} + 1", vars, &unknown) == 1);
+    REQUIRE(unknown.size() == 1);
+    CHECK(unknown.front() == "SPD");
+    CHECK(swcore::evaluate_skill_formula("", vars) == 0);
+    const auto* nova = loaded().data.skill(1180);
+    REQUIRE(nova);
+    CHECK(swcore::skill_damage_bonus(*nova) == 20);  // 2 x "Damage +10%"
+}
+
+TEST_CASE("GB12 damage: worst and best case, counter, survival, what is missing") {
+    const auto team = gb12_team();
+    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/mechanics.json");
+    auto input = gb12_input(team, mechanics);
+    input.manual_speeds = {{"Prilea", 226}, {"Teshar", 167}, {"Konamiya", 167},
+                           {"Luna", 155},   {"Homunculus", 153}};
+    const auto analysis = swcore::analyze_team(input);  // sans box : stats de base
+    REQUIRE(analysis.valid);
+    const auto& worst = analysis.worst;
+    const auto& best = analysis.best;
+    REQUIRE(worst.actions.size() >= 6);
+
+    // Action 1 : Prilea S3, 7.0 x ATQ, sans critique au pire cas (CR 63 %), DEF intacte.
+    const auto& prilea = worst.actions[0];
+    CHECK(prilea.actor == "Prilea");
+    CHECK(prilea.skill == 3);
+    CHECK_FALSE(prilea.crit);
+    CHECK_FALSE(prilea.def_broken);
+    const auto* boar_hunt = loaded().data.skill(449);
+    REQUIRE(boar_hunt);
+    const auto* prilea_ref = loaded().reference.find_swarfarm(372);
+    REQUIRE(prilea_ref);
+    const double expected = 7.0 * *prilea_ref->max_lvl_attack *
+                            (1.0 + swcore::skill_damage_bonus(*boar_hunt) / 100.0) * 1000.0 /
+                            (1140.0 + 3.5 * analysis.boss->defense);
+    CHECK(std::abs(prilea.damage - expected) < 1e-6);
+
+    // Action 2 : Teshar, repli S1 au pire cas ; DEF brisée par Prilea.
+    CHECK(worst.actions[1].actor == "Teshar");
+    CHECK(worst.actions[1].fallback);
+    CHECK(worst.actions[1].skill == 1);
+    CHECK(worst.actions[1].def_broken);
+    // Meilleur cas : S2, critique.
+    CHECK(best.actions[1].skill == 2);
+    CHECK(best.actions[1].crit);
+    // Konamiya S2 : ATQ boostée pour la prochaine action de Teshar.
+    CHECK(worst.actions[3].actor == "Teshar");
+    CHECK(worst.actions[3].atk_buff);
+    CHECK(best.damage > worst.damage);
+
+    // Stats de base : le boss survit ; il manque un facteur > 1 sur ATQ x (1 + DC).
+    CHECK_FALSE(worst.kills);
+    CHECK(worst.required_factor > 1);
+    CHECK_FALSE(analysis.missing.empty());
+    // 7e attaque reçue (Prilea, tour en plus au tic 16) : contre-attaque du Géant.
+    REQUIRE(worst.counter.has_value());
+    CHECK(worst.counter->find("Prilea") != std::string::npos);
+    // Survie : une ligne par monstre ; hypothèse inconnue de Teshar signalée.
+    CHECK(analysis.survival.size() == 5);
+    CHECK(std::find(analysis.unverified.begin(), analysis.unverified.end(),
+                    "per_monster.Teshar.tempest_multiplier") != analysis.unverified.end());
+    // Poids c_i : nukers > 0, Konamiya (sans dégâts) = 0.
+    for (const auto& member : analysis.members) {
+        if (member.config->name == "Konamiya") CHECK(member.coefficient == 0);
+        else CHECK(member.coefficient > 0);
+    }
+    CHECK(analysis.score > 0);
+}
+
+TEST_CASE("Preset sets become solver scenarios") {
+    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/mapping");
+    const auto effects = swcore::SetEffects::load(kRoot + "/data/mapping/set_effects.json");
+    std::string problem;
+    const auto swift =
+        swcore::scenario_from_sets({"Swift", "Fight"}, mapping.set_names, effects, &problem);
+    REQUIRE(swift);
+    REQUIRE(swift->sets.size() == 2);
+    CHECK(swift->sets[0].set_id == 3);
+    CHECK(swift->sets[0].pieces == 4);
+    CHECK(swift->sets[1].set_id == 19);
+    CHECK(swift->sets[1].pieces == 2);
+    const auto fight = swcore::scenario_from_sets({"Fight", "Fight", "Fight"}, mapping.set_names,
+                                                  effects, &problem);
+    REQUIRE(fight);
+    REQUIRE(fight->sets.size() == 1);
+    CHECK(fight->sets[0].pieces == 6);
+    CHECK(swcore::scenario_from_sets({}, mapping.set_names, effects, &problem)->any_set);
+    CHECK_FALSE(swcore::scenario_from_sets({"Swift"}, mapping.set_names, effects, &problem));
+    CHECK(problem.find("4") != std::string::npos);
+    CHECK_FALSE(swcore::scenario_from_sets({"PasUnSet"}, mapping.set_names, effects, &problem));
+}
+
+TEST_CASE("Team optimizer: distinct runes, locked member untouched, constraints kept") {
+    const auto team = gb12_team();
+    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/mechanics.json");
+    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/mapping");
+    const auto effects = swcore::SetEffects::load(kRoot + "/data/mapping/set_effects.json");
+    const std::string export_path = kRoot + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+    auto box = swcore::load_account(export_path, mapping, {});
+    for (auto& monster : box) monster.stats = swcore::calculate_monster_stats(monster, effects);
+    const auto runes = swcore::load_runes(export_path, mapping, {});
+
+    swcore::TeamOptimizerInput input;
+    input.analysis = gb12_input(team, mechanics);
+    input.box = &box;
+    input.runes = &runes;
+    input.effects = &effects;
+    input.mapping_directory = kRoot + "/data/mapping";
+    input.set_names = &mapping.set_names;
+    swcore::TeamOptimizerSettings settings;
+    settings.sets = team.rune_presets.at("set1");
+    settings.locked = {"Konamiya"};
+    settings.time_budget_ms = 1500;
+    settings.max_passes = 1;
+    const auto result = swcore::optimize_team(input, settings, std::stop_token{});
+    REQUIRE(result.members.size() == 5);
+    REQUIRE(result.units.size() == 5);
+
+    // Konamiya verrouillée : même exemplaire, mêmes runes qu'avant.
+    const auto find = [](const std::vector<swcore::AccountMonster>& monsters,
+                         std::uint64_t unit_id) {
+        return std::find_if(monsters.begin(), monsters.end(),
+                            [&](const auto& unit) { return unit.unit_id == unit_id; });
+    };
+    const auto konamiya_id = result.units.at("Konamiya");
+    const auto before = find(box, konamiya_id);
+    const auto after = find(result.box, konamiya_id);
+    REQUIRE(before != box.end());
+    REQUIRE(after != result.box.end());
+    std::set<std::uint64_t> before_ids;
+    std::set<std::uint64_t> after_ids;
+    for (const auto& rune : before->runes) before_ids.insert(rune.rune_id);
+    for (const auto& rune : after->runes) after_ids.insert(rune.rune_id);
+    CHECK(before_ids == after_ids);
+
+    // Aucune rune portée par deux membres de la team ; builds conformes aux
+    // contraintes de leur recherche.
+    std::set<std::uint64_t> used;
+    for (const auto& [name, unit_id] : result.units) {
+        const auto unit = find(result.box, unit_id);
+        REQUIRE(unit != result.box.end());
+        for (const auto& rune : unit->runes) CHECK(used.insert(rune.rune_id).second);
+    }
+    for (const auto& member : result.members) {
+        INFO(member.name);
+        if (member.locked) CHECK_FALSE(member.build.has_value());
+        if (!member.build) continue;
+        const auto& total = member.build->stats.total;
+        for (const auto& [metric, constraint] : member.config.constraints) {
+            const double value = metric == "speed" ? total.speed : total.crit_rate;
+            if (constraint.minimum) CHECK(value >= *constraint.minimum);
+            if (constraint.maximum) CHECK(value <= *constraint.maximum);
+        }
+    }
+    CHECK_FALSE(result.log.empty());
+    CHECK_FALSE(result.cancelled);
 }

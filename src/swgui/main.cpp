@@ -151,12 +151,13 @@ void apply_style(float scale) {
 void load_fonts(float scale) {
     ImGuiIO& io = ImGui::GetIO();
     const char* candidates[] = {"C:/Windows/Fonts/segoeui.ttf"};
+    // Latin-1, ponctuation (– … ’), flèches et symboles mathématiques (≤ ≥ ×).
+    static const ImWchar ranges[] = {0x0020, 0x00FF, 0x2000, 0x206F, 0x2190, 0x21FF,
+                                     0x2200, 0x22FF, 0};
     for (const char* path : candidates) {
         std::error_code error;
         if (!fs::exists(path, error)) continue;
-        if (io.Fonts->AddFontFromFileTTF(path, 17.0f * scale, nullptr,
-                                         io.Fonts->GetGlyphRangesDefault()))
-            return;
+        if (io.Fonts->AddFontFromFileTTF(path, 17.0f * scale, nullptr, ranges)) return;
     }
     ImFontConfig config;
     config.SizePixels = 13.0f * scale;
