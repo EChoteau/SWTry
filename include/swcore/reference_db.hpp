@@ -29,6 +29,7 @@ struct LeaderSkill {
 
 struct ReferenceMonster {
     int com2us_id = 0;
+    int swarfarm_id = 0;  // champ "id" de SWARFARM (référencé par levels.json)
     std::string name;
     Element element = Element::Unknown;
     std::string archetype;  // SWARFARM "archetype" (Attack, HP...), vide si absent
@@ -66,6 +67,8 @@ public:
                             WarningSink warnings = {});
 
     const ReferenceMonster* find(int com2us_id) const;
+    // Par id SWARFARM (levels.json, configs de teams).
+    const ReferenceMonster* find_swarfarm(int swarfarm_id) const;
     std::size_t size() const noexcept;
     // com2us_id des monstres dont au moins une stat de base/niv. max est absente,
     // triés par ordre croissant.
@@ -73,6 +76,7 @@ public:
 
 private:
     std::unordered_map<int, ReferenceMonster> monsters_;
+    std::unordered_map<int, int> by_swarfarm_;  // id SWARFARM -> com2us_id
     std::vector<int> without_stats_;
 };
 

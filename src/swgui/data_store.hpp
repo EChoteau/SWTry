@@ -1,15 +1,19 @@
 #pragma once
 
 #include "swcore/account.hpp"
+#include "swcore/dungeon.hpp"
 #include "swcore/equip.hpp"
 #include "swcore/locks.hpp"
 #include "swcore/reference_db.hpp"
 #include "swcore/runes.hpp"
 #include "swcore/set_effects.hpp"
 #include "swcore/storage_stacks.hpp"
+#include "swcore/team_config.hpp"
 
 #include <cstddef>
 #include <filesystem>
+#include <future>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,8 +80,24 @@ public:
     // Avertissements de lecture, à afficher regroupés dans la barre d'état.
     std::vector<std::string> warnings;
 
+    // Donjons : données SWARFARM (donjons, étages, compétences + overrides),
+    // configs de teams et mechanics.json, chargés une fois en arrière-plan à la
+    // première ouverture de la page Donjons.
+    struct DungeonState {
+        swcore::DungeonData data;
+        std::vector<swcore::TeamConfig> teams;
+        swcore::Mechanics mechanics;
+        std::vector<std::string> warnings;
+    };
+    void start_dungeon_load();
+    // nullptr tant que le chargement n'est pas terminé.
+    const DungeonState* dungeons();
+    bool dungeons_loading() const { return dungeon_future_.valid(); }
+
 private:
     std::filesystem::path root_;
+    std::future<DungeonState> dungeon_future_;
+    std::optional<DungeonState> dungeon_state_;
 };
 
 // Dossier contenant data/mapping : dossier courant, puis dossier de l'exécutable

@@ -123,6 +123,9 @@ std::optional<LeaderSkill> parse_leader_skill(const json& object,
 ReferenceMonster parse_monster(const json& object, const WarningSink& warnings) {
     ReferenceMonster monster;
     monster.com2us_id = read<int>(object, "com2us_id", 0, warnings);
+    // Id SWARFARM : optionnel (pas d'avertissement s'il manque).
+    if (const auto it = object.find("id"); it != object.end() && it->is_number_integer())
+        monster.swarfarm_id = it->get<int>();
     monster.name = read<std::string>(object, "name", "", warnings);
     monster.element = parse_element(object, warnings);
     // Archétype : donnée d'affichage, optionnelle (pas d'avertissement si absente).
@@ -184,6 +187,7 @@ ReferenceDB ReferenceDB::load(const std::filesystem::path& path,
             continue;
         }
         const int id = monster.com2us_id;
+        if (monster.swarfarm_id != 0) database.by_swarfarm_.emplace(monster.swarfarm_id, id);
         const bool complete = monster.has_stats();
         if (!database.monsters_.emplace(id, std::move(monster)).second)
             warn(warnings, "ReferenceDB: duplicate com2us_id");
@@ -201,6 +205,11 @@ const std::vector<int>& ReferenceDB::monsters_without_stats() const noexcept {
 const ReferenceMonster* ReferenceDB::find(int com2us_id) const {
     const auto it = monsters_.find(com2us_id);
     return it == monsters_.end() ? nullptr : &it->second;
+}
+
+const ReferenceMonster* ReferenceDB::find_swarfarm(int swarfarm_id) const {
+    const auto it = by_swarfarm_.find(swarfarm_id);
+    return it == by_swarfarm_.end() ? nullptr : find(it->second);
 }
 
 std::size_t ReferenceDB::size() const noexcept {

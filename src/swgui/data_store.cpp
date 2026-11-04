@@ -3,6 +3,7 @@
 #include "text_util.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <system_error>
 #include <utility>
 
@@ -148,6 +149,37 @@ void DataStore::refresh_swarfarm() {
             swarfarm.newest = file_date(entry.path());
         }
     }
+}
+
+void DataStore::start_dungeon_load() {
+    if (dungeon_state_ || dungeon_future_.valid()) return;  // une seule fois
+    // Copies : le chargement ne touche à rien du thread de l'interface.
+    dungeon_future_ = std::async(
+        std::launch::async,
+        [root = root_, reference = reference, set_names = mapping.set_names]() {
+            DungeonState state;
+            const auto sink = [&](const std::string& message) {
+                state.warnings.push_back(message);
+            };
+            state.data = swcore::DungeonData::load(
+                root / "data" / "swarfarm", root / "data" / "overrides" / "skills_overrides.json",
+                reference, sink);
+            state.teams = swcore::load_team_configs(root / "data" / "teams", sink);
+            for (auto& team : state.teams)
+                swcore::validate_team_config(team, reference, set_names);
+            state.mechanics = swcore::Mechanics::load(root / "data" / "mechanics.json", sink);
+            return state;
+        });
+}
+
+const DataStore::DungeonState* DataStore::dungeons() {
+    if (!dungeon_state_ && dungeon_future_.valid() &&
+        dungeon_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        dungeon_state_ = dungeon_future_.get();
+        warnings.insert(warnings.end(), dungeon_state_->warnings.begin(),
+                        dungeon_state_->warnings.end());
+    }
+    return dungeon_state_ ? &*dungeon_state_ : nullptr;
 }
 
 }  // namespace swgui

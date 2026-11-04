@@ -46,7 +46,9 @@ add_library(swcore STATIC
     src/swcore/solve_async.cpp
     src/swcore/build_text.cpp
     src/swcore/locks.cpp
-    src/swcore/equip.cpp)
+    src/swcore/equip.cpp
+    src/swcore/dungeon.cpp
+    src/swcore/team_config.cpp)
 target_include_directories(swcore
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(swcore
@@ -116,7 +118,8 @@ if(SW_BUILD_GUI)
         src/swgui/snapshot.cpp
         src/swgui/app_locks.cpp
         src/swgui/app_equip.cpp
-        src/swgui/gui_logic.cpp)
+        src/swgui/gui_logic.cpp
+        src/swgui/app_dungeons.cpp)
     target_include_directories(swgui SYSTEM PRIVATE ${pfd_SOURCE_DIR})
     target_link_libraries(swgui PRIVATE swcore imgui project_warnings)
     if(WIN32)
@@ -153,6 +156,7 @@ if(SW_BUILD_TESTS)
         tests/gui_logic_test.cpp
         tests/locks_test.cpp
         tests/equip_test.cpp
+        tests/dungeon_test.cpp
         src/swgui/monster_view.cpp
         src/swgui/snapshot.cpp
         src/swgui/gui_logic.cpp)

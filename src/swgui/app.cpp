@@ -202,6 +202,7 @@ void App::render() {
             case Page::Optimizer: render_search_tab(); break;
             case Page::SavedBuilds: render_saved_builds_page(); break;
             case Page::EquipLocks: render_equip_locks_page(); break;
+            case Page::Dungeons: render_dungeons_page(); break;
             }
         }
     }
@@ -217,6 +218,7 @@ void App::render_menu() {
         {Page::Data, "Données"},
         {Page::Monsters, "Monstres"},
         {Page::Optimizer, "Optimiseur"},
+        {Page::Dungeons, "Donjons"},
         {Page::SavedBuilds, "Builds sauvegardés"},
         {Page::EquipLocks, "Équipement et verrous"}};
     ImGui::Spacing();

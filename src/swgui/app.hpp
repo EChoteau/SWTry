@@ -101,7 +101,7 @@ public:
                                             const swcore::SolverConfig& config);
 
 private:
-    enum class Page { Data, Monsters, Optimizer, SavedBuilds, EquipLocks };
+    enum class Page { Data, Monsters, Optimizer, SavedBuilds, EquipLocks, Dungeons };
 
     struct Toast {
         std::string text;
@@ -130,6 +130,16 @@ private:
     // Retour d'action (toast) avec "Annuler" : un clic = une action, sans popup.
     void show_toast(std::string text, std::function<void()> undo = {});
     void render_toast();
+
+    // Page "Donjons" (app_dungeons.cpp) : donjons -> étages -> teams -> team.
+    void render_dungeons_page();
+    void render_dungeon_list(const DataStore::DungeonState& state);
+    void render_dungeon_levels(const DataStore::DungeonState& state,
+                               const swcore::Dungeon& dungeon);
+    void render_dungeon_level(const DataStore::DungeonState& state,
+                              const swcore::Dungeon& dungeon, const swcore::DungeonLevel& level);
+    void render_dungeon_team(const DataStore::DungeonState& state,
+                             const swcore::TeamConfig& team);
 
     // Page "Équipement et verrous" (app_equip.cpp).
     void render_equip_locks_page();
@@ -257,6 +267,12 @@ private:
     std::vector<SavedBuild> saved_builds_;
     bool saved_loaded_ = false;
     std::size_t delete_armed_ = static_cast<std::size_t>(-1);
+
+    // Page Donjons : sélection courante (0 / vide : niveau du dessus).
+    int dungeon_id_ = 0;
+    int dungeon_level_id_ = 0;
+    std::string dungeon_team_id_;
+    char dungeon_filter_[64] = {};
 
     std::optional<Toast> toast_;
     // Page Équipement et verrous.

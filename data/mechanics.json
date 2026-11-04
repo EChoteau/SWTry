@@ -1,0 +1,14 @@
+{
+  "tick_atb_percent": 7.0,
+  "def_formula": { "a": 1000, "b": 1140, "c": 3.5 },
+  "def_break_percent": 70,
+  "atk_buff_percent": 50,
+  "atk_buff_on": "base",
+  "element_advantage_crit_rate": 15,
+  "element_advantage_damage_bonus": 0,
+  "max_hp_damage_vs_boss": "full",
+  "tie_break": "config_order",
+  "per_monster": {
+    "Teshar": { "tempest_multiplier": null, "tempest_cooldown": 3, "tempest_every_attack": false }
+  }
+}
