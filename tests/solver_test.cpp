@@ -7,6 +7,7 @@
 #include <array>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -599,7 +600,10 @@ swcore::Rune grind_rune(std::uint64_t id, int slot, int primary, int primary_val
 
 // Règles du test, appliquées indépendamment du solveur : ATQ% (4) rareté 5
 // "max" -> max(g0, 10) ; VIT (8) rareté 4 valeur exacte 3. Runes >= +12.
-std::vector<std::pair<swcore::Rune, int>> brute_variants(const swcore::Rune& rune) {
+// Sans plafond (full_grind) : meulage complet, une seule version par rune ;
+// avec plafond : chaque sous-ensemble de meules.
+std::vector<std::pair<swcore::Rune, int>> brute_variants(const swcore::Rune& rune,
+                                                         bool full_grind) {
     std::vector<std::pair<std::size_t, int>> options;
     if (rune.upgrade_level >= 12) {
         for (std::size_t j = 0; j < rune.secondary.size(); ++j) {
@@ -611,7 +615,8 @@ std::vector<std::pair<swcore::Rune, int>> brute_variants(const swcore::Rune& run
         }
     }
     std::vector<std::pair<swcore::Rune, int>> variants;
-    for (std::size_t mask = 0; mask < (std::size_t{1} << options.size()); ++mask) {
+    const std::size_t all = (std::size_t{1} << options.size()) - 1;
+    for (std::size_t mask = full_grind ? all : 0; mask <= all; ++mask) {
         auto copy = rune;
         int cost = 0;
         for (std::size_t bit = 0; bit < options.size(); ++bit)
@@ -634,7 +639,7 @@ BruteBest brute_force_grinds(const swcore::AccountMonster& target,
                              const swcore::SolverConfig& config) {
     std::array<std::vector<std::pair<swcore::Rune, int>>, 6> by_slot;
     for (const auto& rune : pool)
-        for (auto& variant : brute_variants(rune))
+        for (auto& variant : brute_variants(rune, !config.max_new_grinds))
             by_slot[static_cast<std::size_t>(rune.slot - 1)].push_back(variant);
     BruteBest best;
     std::array<std::size_t, 6> index{};
@@ -674,7 +679,7 @@ BruteBest brute_force_grinds(const swcore::AccountMonster& target,
 
 }  // namespace
 
-TEST_CASE("Simulated grindstones match a brute force over every grind subset") {
+TEST_CASE("Simulated grindstones match a brute force (full grind or capped subsets)") {
     swcore::AccountMonster target;
     target.con = 648;
     target.attack = 801;
@@ -779,7 +784,7 @@ struct CraftVariant {
 // ailleurs (principale, innée, autres substats) ; meule de la ligne perdue.
 std::vector<CraftVariant> brute_craft_variants(const swcore::Rune& rune,
                                                bool with_gems, bool with_grinds,
-                                               bool regem = true) {
+                                               bool regem = true, bool full_grind = true) {
     std::vector<CraftVariant> states{{rune, 0, 0}};
     if (rune.upgrade_level < 12) return states;
     if (with_gems) {
@@ -824,7 +829,9 @@ std::vector<CraftVariant> brute_craft_variants(const swcore::Rune& rune,
                 if (target != line.grind) options.emplace_back(j, target);
             }
         }
-        for (std::size_t mask = 0; mask < (std::size_t{1} << options.size()); ++mask) {
+        // Sans plafond de meules : meulage complet (une version par état de gemme).
+        const std::size_t all = (std::size_t{1} << options.size()) - 1;
+        for (std::size_t mask = full_grind ? all : 0; mask <= all; ++mask) {
             auto variant = state;
             for (std::size_t bit = 0; bit < options.size(); ++bit)
                 if (mask & (std::size_t{1} << bit)) {
@@ -851,7 +858,8 @@ CraftBest brute_force_craft(const swcore::AccountMonster& target,
     for (const auto& rune : pool)
         for (auto& variant : brute_craft_variants(rune, !config.gems.empty(),
                                                   !config.grindstones.empty(),
-                                                  config.gem_regem_existing))
+                                                  config.gem_regem_existing,
+                                                  !config.max_new_grinds))
             by_slot[static_cast<std::size_t>(rune.slot - 1)].push_back(variant);
     CraftBest best;
     std::array<std::size_t, 6> index{};
@@ -1001,6 +1009,105 @@ TEST_CASE("Simulated gems and grindstones match a brute force") {
                 CHECK(build.actual_runes[s].applied_grindstones.empty());
             }
         }
+    }
+}
+
+TEST_CASE("One row per rune combination: best variant kept, before top_n") {
+    swcore::AccountMonster target;
+    target.con = 648;
+    target.attack = 801;
+    target.defense = 582;
+    target.speed = 108;
+    target.crit_rate = 15;
+    target.crit_damage = 50;
+    target.resistance = 15;
+    // Plusieurs gemmes possibles par rune : plusieurs variantes de mêmes runes.
+    const std::vector<swcore::Rune> pool{
+        craft_rune(1, 1, 3, 160, {{8, 5, 0, 0}, {11, 6, 0, 0}}),
+        craft_rune(2, 2, 4, 63, {{9, 5, 0, 0}, {8, 4, 2, 0}}),
+        craft_rune(3, 3, 5, 160, {{4, 5, 0, 1}, {8, 3, 0, 0}}),
+        craft_rune(33, 3, 5, 160, {{4, 9, 0, 0}, {9, 6, 0, 0}}),
+        craft_rune(4, 4, 10, 80, {{4, 6, 0, 0}}, 9),
+        craft_rune(44, 4, 10, 80, {{11, 6, 0, 0}}),
+        craft_rune(5, 5, 1, 2448, {{4, 7, 4, 0}, {9, 3, 0, 0}}),
+        craft_rune(6, 6, 4, 63, {{9, 4, 0, 0}})};
+
+    swcore::SolverConfig config;
+    config.objective.weights["attack"] = 1;
+    config.objective.weights["crit_rate"] = 20;
+    config.objective.weights["speed"] = 5;
+    config.grindstones[4] = {swcore::GrindstoneMode::Max, 5, 0};
+    config.grindstones[8] = {swcore::GrindstoneMode::Exact, 4, 3};
+    config.gems[4] = {swcore::GrindstoneMode::Max, 5, 0};
+    config.gems[9] = {swcore::GrindstoneMode::Exact, 5, 7};
+    config.scenarios = {swcore::SetScenario{"Six", {{17, 6}}, false}};
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+
+    // Force brute : meilleur score de chaque combinaison de 6 runes physiques.
+    std::array<std::vector<CraftVariant>, 6> by_slot;
+    for (const auto& rune : pool)
+        for (auto& variant : brute_craft_variants(rune, true, true))
+            by_slot[static_cast<std::size_t>(rune.slot - 1)].push_back(variant);
+    std::map<std::array<std::uint64_t, 6>, double> best;
+    std::array<std::size_t, 6> index{};
+    while (true) {
+        swcore::AccountMonster candidate = target;
+        std::array<std::uint64_t, 6> ids{};
+        for (std::size_t s = 0; s < 6; ++s) {
+            candidate.runes.push_back(by_slot[s][index[s]].rune);
+            candidate.runes.back().occupancy = swcore::RuneOccupancy::Equipped;
+            ids[s] = by_slot[s][index[s]].rune.rune_id;
+        }
+        const auto total = swcore::calculate_monster_stats(candidate, {}).total;
+        double score = 0;
+        for (const auto& [name, weight] : config.objective.weights)
+            score += test_metric(total, name) * weight;
+        const auto [it, inserted] = best.emplace(ids, score);
+        if (!inserted) it->second = std::max(it->second, score);
+        std::size_t s = 0;
+        while (s < 6 && ++index[s] == by_slot[s].size()) index[s++] = 0;
+        if (s == 6) break;
+    }
+    REQUIRE(best.size() == 4);  // 2 runes en slot 3, 2 en slot 4
+    std::vector<double> scores;
+    for (const auto& [ids, score] : best) scores.push_back(score);
+    std::sort(scores.rbegin(), scores.rend());
+
+    // top_n = 0 : une ligne par combinaison, avec le score de sa meilleure variante.
+    config.limits.top_n = 0;
+    const auto all = swcore::solve_runes(target, pool, {}, config, mapping);
+    REQUIRE(all.scenarios.size() == 1);
+    const auto& every = all.scenarios[0];
+    CHECK(every.valid_builds == best.size());
+    REQUIRE(every.all_builds.size() == best.size());
+    std::set<std::array<std::uint64_t, 6>> seen;
+    for (const auto& build : every.all_builds) {
+        CHECK(seen.insert(build.rune_ids).second);  // aucun doublon
+        REQUIRE(best.contains(build.rune_ids));
+        CHECK(build.score == best.at(build.rune_ids));
+    }
+
+    // top_n = 2 : les variantes ne consomment pas de place (la meilleure
+    // combinaison a plusieurs variantes mais n'occupe qu'une ligne).
+    // Seul le premier rang est exact en mode top_n : le filtre de dominance des
+    // runes (prune_dominated) peut écarter une variante utile à une combinaison
+    // de rang >= 2. Ici, la variante "gemme ATQ%" de la rune 44 est dominée par
+    // celle de la rune 4 : (33, 44) vaut 488 au mieux mais le solveur ne la
+    // trouve qu'à 444, derrière (3, 4) = 478.
+    config.limits.top_n = 2;
+    const auto top = swcore::solve_runes(target, pool, {}, config, mapping);
+    REQUIRE(top.scenarios.size() == 1);
+    const auto& kept = top.scenarios[0].builds;
+    REQUIRE(kept.size() == 2);
+    CHECK(kept[0].score == scores[0]);
+    CHECK(kept[0].score >= kept[1].score);
+    std::set<std::array<std::uint64_t, 6>> kept_ids;
+    for (const auto& build : kept) {
+        std::array<std::uint64_t, 6> ids{};
+        for (std::size_t s = 0; s < 6; ++s) ids[s] = build.runes[s].rune_id;
+        CHECK(kept_ids.insert(ids).second);  // deux combinaisons distinctes
+        REQUIRE(best.contains(ids));
+        CHECK(build.score <= best.at(ids));  // jamais au-dessus de la force brute
     }
 }
 

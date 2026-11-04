@@ -135,7 +135,7 @@ TEST_CASE("Lock table: orphan locks removed, moved objects counted") {
 TEST_CASE("Locks: reserved for B excluded for A, usable by B; reserved for nobody; ignore") {
     const auto runes = pool();
     for (const bool any_set : {false, true}) {
-        INFO(any_set ? "any_set" : "sets fixes");
+        INFO((any_set ? "any_set" : "sets fixes"));
         auto solver_config = config(any_set);
         solver_config.lock_table.set(rune_lock(11, kB));
         // Sans verrou, les runes fortes (sur B) sont choisies par tout le monde.
@@ -222,7 +222,7 @@ TEST_CASE("Locks: solver matches a brute force over the allowed runes") {
     table.set(rune_lock(33, kA));   // réservée à A
     table.set(rune_lock(15, kA));   // sur B mais réservée à A
     for (const bool keep : {false, true}) {
-        INFO(keep ? "slots figés" : "verrous respectés");
+        INFO((keep ? "slots figés" : "verrous respectés"));
         auto solver_config = config(true);
         solver_config.lock_table = table;
         solver_config.locks.keep_target_locked = keep;

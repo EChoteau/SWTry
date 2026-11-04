@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <string>
 
 namespace swgui {
@@ -11,6 +12,8 @@ struct Settings {
     std::string last_storage;  // chemin UTF-8
     int window_width = 1440;
     int window_height = 900;
+    // Sections repliables de l'Optimiseur : ouvert / fermé.
+    std::map<std::string, bool> sections;
 };
 
 Settings load_settings(const std::filesystem::path& user_directory);

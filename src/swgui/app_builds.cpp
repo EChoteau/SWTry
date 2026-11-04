@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <ctime>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <system_error>
@@ -40,13 +41,6 @@ std::string now_text(const char* format) {
     return buffer;
 }
 
-std::string ids_text(const std::array<swcore::Rune, 6>& runes) {
-    std::string text;
-    for (std::size_t i = 0; i < runes.size(); ++i)
-        text += (i ? " " : "") + std::to_string(runes[i].rune_id);
-    return text;
-}
-
 // Stats d'un build : copie du monstre avec les 6 runes de calcul (fonction pure).
 swcore::StatBlock build_stats_of(const swcore::AccountMonster& target,
                                  const std::array<swcore::Rune, 6>& runes,
@@ -55,6 +49,21 @@ swcore::StatBlock build_stats_of(const swcore::AccountMonster& target,
     copy.runes.assign(runes.begin(), runes.end());
     for (auto& rune : copy.runes) rune.occupancy = swcore::RuneOccupancy::Equipped;
     return swcore::calculate_monster_stats(copy, effects);
+}
+
+// "Fatal 4 + Lame 2" (sets des 6 runes, du plus fréquent au moins fréquent).
+std::string sets_text(const std::array<swcore::Rune, 6>& runes,
+                      const swcore::RuneMapping& mapping) {
+    std::map<int, int> counts;
+    for (const auto& rune : runes) ++counts[rune.set_id];
+    std::vector<std::pair<int, int>> ordered(counts.begin(), counts.end());
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::string text;
+    for (const auto& [set_id, count] : ordered)
+        text += (text.empty() ? "" : " + ") + swcore::text::set_name(mapping, set_id) + " " +
+                std::to_string(count);
+    return text;
 }
 
 }  // namespace
@@ -95,7 +104,7 @@ void App::open_build_tab(const swcore::AccountMonster& target, swcore::SolverBui
         for (std::size_t i = 0; same && i < 6; ++i)
             same = tab.build.runes[i].rune_id == build.runes[i].rune_id;
         if (same) {
-            tab.focus = true;
+            activate_tab(tab.uid);
             return;
         }
     }
@@ -120,8 +129,8 @@ void App::open_build_tab(const swcore::AccountMonster& target, swcore::SolverBui
     tab.title = monster_name(target.unit_master_id) + " - " + scenario + " - " + metric +
                 " " + swcore::text::format_score(tab.build.score);
     if (save) save_build(tab);
+    activate_tab(tab.uid);
     tabs_.push_back(std::move(tab));
-    page_ = Page::Optimizer;
 }
 
 void App::render_build_tab(WorkspaceTab& tab) {
@@ -129,10 +138,10 @@ void App::render_build_tab(WorkspaceTab& tab) {
     const auto& report = tab.report;
     if (ImGui::Button("Copier en texte")) ImGui::SetClipboardText(tab.text.c_str());
     ImGui::SameLine();
-    if (ImGui::Button("Copier les ids de runes"))
-        ImGui::SetClipboardText(ids_text(tab.build.runes).c_str());
-    ImGui::SameLine();
-    if (ImGui::Button("Fermer")) tab.open = false;
+    if (ImGui::Button("Fermer")) {
+        tab.open = false;
+        view_.tab_closed(tab.uid);
+    }
 
     // Équiper puis Verrouiller : deux boutons scindés, deux clics indépendants.
     render_build_actions(tab);
@@ -178,14 +187,8 @@ void App::render_build_tab(WorkspaceTab& tab) {
         ImGui::TableSetColumnIndex(1);
         std::array<bool, 6> present{};
         present.fill(true);
-        // Cadenas sur les cartes : réserve la rune pour le monstre CIBLE du build.
-        if (const int slot = render_rune_cards(report.runes, present, data_.mapping,
-                                               &data_.locks, target.unit_id))
-            toggle_rune_lock_for(report.runes[static_cast<std::size_t>(slot - 1)].rune,
-                                 target.unit_id);
-        if (const auto rid = render_artifacts(target, data_.root(), false, &data_.locks))
-            for (const auto& artifact : target.artifacts)
-                if (artifact.rid == rid) toggle_artifact_lock(artifact);
+        render_rune_cards(report.runes, present, data_.mapping);
+        render_artifacts(target, data_.root(), false);
         ImGui::EndTable();
     }
     // Blocs agrégés "Gemmes à utiliser" / "Meules à utiliser" (texte de swcore).
@@ -199,6 +202,16 @@ void App::render_build_tab(WorkspaceTab& tab) {
 }
 
 void App::save_build(const WorkspaceTab& tab) {
+    // Déjà enregistré (même monstre, mêmes runes, mêmes variantes) : rien à faire.
+    if (!saved_loaded_) refresh_saved_builds();
+    for (const auto& saved : saved_builds_) {
+        if (saved.unit_id != tab.target.unit_id || saved.variants != tab.build.variants)
+            continue;
+        bool same = true;
+        for (std::size_t slot = 0; same && slot < 6; ++slot)
+            same = saved.rune_ids[slot] == tab.build.runes[slot].rune_id;
+        if (same) return;
+    }
     const fs::path directory = data_.user_directory() / "saved_builds";
     std::error_code error;
     fs::create_directories(directory, error);
@@ -253,6 +266,17 @@ void App::refresh_saved_builds() {
                 saved.scenario = root.value("scenario", std::string{});
                 saved.date = root.value("date", std::string{});
                 saved.score = root.value("score", 0.0);
+                saved.unit_id = root.at("monster").value("unit_id", std::uint64_t{0});
+                saved.rune_ids =
+                    root.value("rune_ids", std::array<std::uint64_t, 6>{});
+                saved.variants = root.value("variants", std::array<int, 6>{});
+                // Sets : depuis les runes de l'instantané (sinon inconnus).
+                if (const auto snapshot = root.find("snapshot"); snapshot != root.end()) {
+                    std::array<swcore::Rune, 6> runes{};
+                    for (std::size_t slot = 0; slot < 6; ++slot)
+                        runes[slot] = rune_from_json(snapshot->at("runes").at(slot));
+                    saved.sets = sets_text(runes, data_.mapping);
+                }
                 saved_builds_.push_back(std::move(saved));
             } catch (const std::exception&) {
                 // Fichier illisible : ignoré.
@@ -340,31 +364,37 @@ void App::open_saved_build(const SavedBuild& saved) {
 }
 
 void App::render_saved_builds_page() {
+    bool resort = !saved_loaded_;
     if (!saved_loaded_) refresh_saved_builds();
     ImGui::TextUnformatted("Builds sauvegardés");
     ImGui::Separator();
-    if (ImGui::Button("Actualiser")) refresh_saved_builds();
+    if (ImGui::Button("Actualiser")) {
+        refresh_saved_builds();
+        resort = true;
+    }
     ImGui::SameLine();
     ImGui::TextColored(color::muted, "Chaque build ouvert est enregistré automatiquement.");
     if (saved_builds_.empty()) {
         ImGui::TextColored(color::muted, "Aucun build sauvegardé.");
         return;
     }
-    enum { kMonster, kScenario, kScore, kDate, kActions };
+    enum { kMonster, kScenario, kSets, kScore, kDate, kActions };
     const ImGuiTableFlags flags = ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
                                   ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                                   ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV;
-    if (!ImGui::BeginTable("##saved", 5, flags)) return;
+    if (!ImGui::BeginTable("##saved", 6, flags)) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Monstre", 0, 0.0f, kMonster);
     ImGui::TableSetupColumn("Scénario", 0, 0.0f, kScenario);
+    ImGui::TableSetupColumn("Sets", 0, 0.0f, kSets);
     ImGui::TableSetupColumn("Score", ImGuiTableColumnFlags_PreferSortDescending, 0.0f, kScore);
     ImGui::TableSetupColumn("Date", ImGuiTableColumnFlags_DefaultSort |
                                         ImGuiTableColumnFlags_PreferSortDescending,
                             0.0f, kDate);
     ImGui::TableSetupColumn("", ImGuiTableColumnFlags_NoSort, 0.0f, kActions);
     ImGui::TableHeadersRow();
-    if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs(); specs && specs->SpecsDirty) {
+    if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs();
+        specs && (specs->SpecsDirty || resort)) {
         std::stable_sort(saved_builds_.begin(), saved_builds_.end(),
                          [&](const SavedBuild& a, const SavedBuild& b) {
                              for (int i = 0; i < specs->SpecsCount; ++i) {
@@ -375,6 +405,7 @@ void App::render_saved_builds_page() {
                                      result = fold(a.monster).compare(fold(b.monster));
                                      break;
                                  case kScenario: result = a.scenario.compare(b.scenario); break;
+                                 case kSets: result = a.sets.compare(b.sets); break;
                                  case kScore:
                                      result = a.score < b.score ? -1 : (a.score > b.score ? 1 : 0);
                                      break;
@@ -400,6 +431,9 @@ void App::render_saved_builds_page() {
         ImGui::TextUnformatted(saved.monster.c_str());
         ImGui::TableSetColumnIndex(kScenario);
         ImGui::TextUnformatted(saved.scenario.c_str());
+        ImGui::TableSetColumnIndex(kSets);
+        if (saved.sets.empty()) ImGui::TextColored(color::muted, "-");
+        else ImGui::TextUnformatted(saved.sets.c_str());
         ImGui::TableSetColumnIndex(kScore);
         ImGui::TextUnformatted(swcore::text::format_score(saved.score).c_str());
         ImGui::TableSetColumnIndex(kDate);
@@ -417,15 +451,12 @@ void App::render_saved_builds_page() {
         ImGui::PopID();
     }
     ImGui::EndTable();
-    if (open) {
-        open_saved_build(saved_builds_[*open]);
-        select_fixed_ = FixedTab::None;
-    }
+    if (open) open_saved_build(saved_builds_[*open]);
     if (remove) {
         std::error_code error;
         fs::remove(saved_builds_[*remove].file, error);
         delete_armed_ = static_cast<std::size_t>(-1);
-        refresh_saved_builds();
+        saved_loaded_ = false;  // relu et retrié à la prochaine image
         set_status(error ? "Suppression impossible." : "Build supprimé.");
     }
 }

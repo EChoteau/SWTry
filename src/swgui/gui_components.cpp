@@ -117,6 +117,42 @@ void render_stat_comparison(const StatComparison& stats) {
     ImGui::EndTable();
 }
 
+namespace {
+
+// Cadenas dans le rectangle [origin, origin + size] ; anse relevée si ouvert.
+// Partiel : contour + moitié basse remplie en demi-teinte.
+void draw_padlock(ImDrawList* draw, ImVec2 origin, ImVec2 size, swcore::LockState state,
+                  ImVec4 tint, float thickness) {
+    const ImU32 col = ImGui::GetColorU32(tint);
+    const ImVec2 body_min(origin.x + size.x * 0.08f, origin.y + size.y * 0.45f);
+    const ImVec2 body_max(origin.x + size.x * 0.92f, origin.y + size.y * 0.95f);
+    const float rounding = size.y * 0.08f;
+    if (state == swcore::LockState::Full) {
+        draw->AddRectFilled(body_min, body_max, col, rounding);
+    } else if (state == swcore::LockState::Partial) {
+        ImVec4 half = tint;
+        half.w *= 0.55f;
+        draw->AddRectFilled(ImVec2(body_min.x, (body_min.y + body_max.y) * 0.5f), body_max,
+                            ImGui::GetColorU32(half), rounding);
+        draw->AddRect(body_min, body_max, col, rounding, 0, thickness);
+    } else {
+        draw->AddRect(body_min, body_max, col, rounding, 0, thickness);
+    }
+    const float radius = size.x * 0.28f;
+    const float lift = state == swcore::LockState::None ? size.y * 0.12f : 0.0f;
+    const ImVec2 center((body_min.x + body_max.x) * 0.5f, body_min.y - size.y * 0.12f - lift);
+    draw->PathArcTo(center, radius, 3.14159265f, 2.0f * 3.14159265f, 16);
+    draw->PathStroke(col, 0, thickness);
+    draw->AddLine(ImVec2(center.x - radius, center.y), ImVec2(center.x - radius, body_min.y),
+                  col, thickness);
+    // Anse fermée : les deux montants touchent le corps ; ouverte : un seul.
+    if (state != swcore::LockState::None)
+        draw->AddLine(ImVec2(center.x + radius, center.y),
+                      ImVec2(center.x + radius, body_min.y), col, thickness);
+}
+
+}  // namespace
+
 bool lock_button(const char* id, swcore::LockState state, const std::string& tooltip) {
     const float height = ImGui::GetTextLineHeight();
     const ImVec2 size(height * 0.85f, height);
@@ -128,88 +164,111 @@ bool lock_button(const char* id, swcore::LockState state, const std::string& too
                                                         : color::muted;
     if (hovered) tint.w = 1.0f;
     else if (state == swcore::LockState::None) tint.w = 0.6f;
-    const ImU32 col = ImGui::GetColorU32(tint);
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    // Corps du cadenas.
-    const ImVec2 body_min(origin.x + size.x * 0.08f, origin.y + size.y * 0.45f);
-    const ImVec2 body_max(origin.x + size.x * 0.92f, origin.y + size.y * 0.95f);
-    if (state == swcore::LockState::Full) {
-        draw->AddRectFilled(body_min, body_max, col, 2.0f);
-    } else if (state == swcore::LockState::Partial) {
-        draw->AddRect(body_min, body_max, col, 2.0f, 0, 1.5f);
-        draw->AddRectFilled(body_min, ImVec2((body_min.x + body_max.x) * 0.5f, body_max.y),
-                            col, 2.0f);
-    } else {
-        draw->AddRect(body_min, body_max, col, 2.0f, 0, 1.5f);
-    }
-    // Anse : fermée (verrouillé) ou relevée (ouvert).
-    const float radius = size.x * 0.28f;
-    const float lift = state == swcore::LockState::None ? size.y * 0.12f : 0.0f;
-    const ImVec2 center((body_min.x + body_max.x) * 0.5f, body_min.y - lift);
-    draw->PathArcTo(center, radius, IM_PI, 2.0f * IM_PI, 12);
-    draw->PathStroke(col, 0, 1.6f);
-    draw->AddLine(ImVec2(center.x - radius, center.y), ImVec2(center.x - radius, body_min.y),
-                  col, 1.6f);
-    if (state != swcore::LockState::None)
-        draw->AddLine(ImVec2(center.x + radius, center.y),
-                      ImVec2(center.x + radius, body_min.y), col, 1.6f);
+    draw_padlock(ImGui::GetWindowDrawList(), origin, size, state, tint, 1.6f);
     if (hovered && !tooltip.empty()) ImGui::SetTooltip("%s", tooltip.c_str());
     return clicked;
 }
 
-void render_rune_card(const swcore::RuneView& view, const swcore::RuneMapping& mapping,
-                      const swcore::LockTable* locks, bool* lock_clicked,
-                      std::uint64_t context_unit) {
+void big_padlock(swcore::LockState state, float size) {
+    const ImVec2 extent(size * 0.85f, size);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(extent);
+    draw_padlock(ImGui::GetWindowDrawList(), origin, extent, state,
+                 state == swcore::LockState::None ? color::muted : color::accent,
+                 size * 0.07f);
+}
+
+std::string origin_label(const swcore::Rune& rune) {
+    if (rune.occupancy == swcore::RuneOccupancy::Inventory) return "Inventaire";
+    std::string name = swcore::text::origin_name(rune);
+    // "Raoq (12345)" -> "Raoq" : l'id n'est pas affiché.
+    if (const auto open = name.rfind(" ("); open != std::string::npos && name.back() == ')') {
+        const std::string inside = name.substr(open + 2, name.size() - open - 3);
+        if (!inside.empty() &&
+            std::all_of(inside.begin(), inside.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            name.erase(open);
+    }
+    return name;
+}
+
+void render_rune_card(const swcore::RuneView& view, const swcore::RuneMapping& mapping) {
     using namespace swcore::text;
     const auto& rune = view.rune;
-    if (locks) {
-        const auto* lock = locks->find(swcore::LockKind::Rune, rune.rune_id);
-        // Verrouillée pour un autre monstre que celui du contexte : état distinct.
-        const bool other = lock && context_unit != 0 && lock->reserved_for != context_unit;
-        const std::string tooltip =
-            !lock ? std::string{"Non verrouillée (clic : verrouiller)"}
-            : lock->reserved_for == 0
-                ? std::string{"Verrouillée : réservée à personne (clic : déverrouiller)"}
-                : (other ? "Verrouillée pour " + lock->monster_name + ", pas pour ce monstre"
-                         : "Verrouillée pour " + lock->monster_name) +
-                      " (clic : déverrouiller)";
-        const auto state = !lock ? swcore::LockState::None
-                           : other ? swcore::LockState::Partial
-                                   : swcore::LockState::Full;
-        if (lock_button("##rune_lock", state, tooltip) && lock_clicked) *lock_clicked = true;
-        ImGui::SameLine();
-    }
     ImGui::Text("+%d %s (slot %d)  %s", rune.upgrade_level,
                 set_name(mapping, rune.set_id).c_str(), rune.slot,
                 stars_text(rune.stars).c_str());
     ImGui::Text("Principale : %s", effect_text(mapping, rune.primary).c_str());
     const bool innate = rune.innate && rune.innate->stat != swcore::StatType::None;
     ImGui::Text("Innée : %s", innate ? effect_text(mapping, rune.innate).c_str() : "-");
+    // Chaque substat sur UNE ligne, avec sa valeur mise à jour par la simulation :
+    // "ATQ% 25 [+4 sim.]", "ATQ% 29 [+7 + 3 sim.]" ; ligne gemmée : stat de la
+    // gemme. Partie simulée en couleur d'accent ; info-bulle : valeurs réelles.
     for (std::size_t j = 0; j < rune.secondary.size(); ++j) {
         const auto& line = rune.secondary[j];
-        std::string text = stat_name(mapping, line.value.stat_id) + " " +
-                           std::to_string(line.value.value + line.grind);
-        if (line.grind != 0) text += " [+" + std::to_string(line.grind) + "]";
-        if (line.enchanted) text += " (gemme)";
+        const int index = static_cast<int>(j);
         const auto gem = std::find_if(view.gems.begin(), view.gems.end(),
-                                      [&](const swcore::AppliedGem& g) {
-                                          return g.line == static_cast<int>(j);
-                                      });
-        if (gem != view.gems.end()) {
-            ImGui::TextColored(color::muted, "  %s [remplacée]", text.c_str());
-            ImGui::TextColored(color::accent, "    -> gemme %s %s %d (simulée)",
-                               rarity_label(gem->rarity),
-                               stat_name(mapping, gem->stat_id).c_str(), gem->value);
-        } else {
+                                      [&](const swcore::AppliedGem& g) { return g.line == index; });
+        const auto grind = std::find_if(
+            view.grinds.begin(), view.grinds.end(),
+            [&](const swcore::AppliedGrindstone& g) { return g.line == index; });
+        const bool gemmed = gem != view.gems.end();
+        const bool ground = grind != view.grinds.end();
+        const std::string real = stat_name(mapping, line.value.stat_id) + " " +
+                                 std::to_string(line.value.value + line.grind);
+
+        if (!gemmed && !ground) {
+            std::string text = real;
+            if (line.grind != 0) text += " [+" + std::to_string(line.grind) + "]";
+            if (line.enchanted) text += " (gemme)";
             ImGui::Text("  %s", text.c_str());
+            continue;
         }
-        for (const auto& grind : view.grinds)
-            if (grind.line == static_cast<int>(j))
-                ImGui::TextColored(color::accent, "    -> meule %s +%d (simulée)",
-                                   rarity_label(grind.rarity), grind.value);
+
+        // Valeurs après simulation : stat / valeur de base (gemme éventuelle),
+        // meule réelle conservée (perdue si gemme), meule simulée.
+        const int stat = gemmed ? gem->stat_id : line.value.stat_id;
+        const int base = gemmed ? gem->value : line.value.value;
+        const int kept_grind = gemmed ? 0 : line.grind;
+        const int new_grind = ground ? grind->value : kept_grind;
+        std::string bracket;
+        if (ground && kept_grind != 0) {
+            const int delta = new_grind - kept_grind;
+            bracket = "[+" + std::to_string(kept_grind) + (delta >= 0 ? " + " : " - ") +
+                      std::to_string(delta >= 0 ? delta : -delta) + " sim.]";
+        } else if (ground) {
+            bracket = "[+" + std::to_string(new_grind) + " sim.]";
+        } else {
+            bracket = "[sim.]";
+        }
+
+        ImGui::BeginGroup();
+        const std::string head = stat_name(mapping, stat) + " " + std::to_string(base + new_grind);
+        if (gemmed) {
+            ImGui::TextColored(color::accent, "  %s (gemme) %s", head.c_str(), bracket.c_str());
+        } else {
+            ImGui::Text("  %s", head.c_str());
+            ImGui::SameLine(0, ImGui::GetFontSize() * 0.3f);
+            ImGui::TextColored(color::accent, "%s", bracket.c_str());
+        }
+        ImGui::EndGroup();
+        if (ImGui::IsItemHovered()) {
+            std::string tip;
+            if (gemmed) {
+                tip = "ligne remplacée : " + stat_name(mapping, gem->old_stat_id) + " " +
+                      std::to_string(gem->old_value + gem->old_grind);
+                if (gem->old_grind != 0) tip += " (meule +" + std::to_string(gem->old_grind) + ")";
+                tip += "\ngemme simulée " + std::string(rarity_label(gem->rarity)) + " : " +
+                       stat_name(mapping, gem->stat_id) + " " + std::to_string(gem->value);
+            } else {
+                tip = "valeur réelle " + std::to_string(line.value.value + line.grind);
+            }
+            if (ground)
+                tip += std::string(gemmed ? "\n" : ", ") + "meule simulée " +
+                       rarity_label(grind->rarity) + " +" + std::to_string(grind->value);
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
     }
-    ImGui::TextColored(color::muted, "Id : %s", std::to_string(rune.rune_id).c_str());
-    ImGui::TextColored(color::muted, "Origine : %s", origin_name(rune).c_str());
+    ImGui::TextColored(color::muted, "Origine : %s", origin_label(rune).c_str());
     ImGui::Text("Efficacité : %s %%", fixed2(view.efficiency).c_str());
     if (view.simulated_efficiency) {
         ImGui::SameLine();
@@ -218,43 +277,36 @@ void render_rune_card(const swcore::RuneView& view, const swcore::RuneMapping& m
     }
 }
 
-int render_rune_cards(const std::array<swcore::RuneView, 6>& runes,
-                      const std::array<bool, 6>& present,
-                      const swcore::RuneMapping& mapping, const swcore::LockTable* locks,
-                      std::uint64_t context_unit) {
-    int clicked_slot = 0;
+void render_rune_cards(const std::array<swcore::RuneView, 6>& runes,
+                       const std::array<bool, 6>& present,
+                       const swcore::RuneMapping& mapping) {
     if (!ImGui::BeginTable("##cards", 3,
                            ImGuiTableFlags_BordersInner | ImGuiTableFlags_SizingStretchSame))
-        return clicked_slot;
+        return;
     for (const auto& slots : {std::array<int, 3>{6, 1, 2}, std::array<int, 3>{5, 4, 3}}) {
         ImGui::TableNextRow();
         for (int column = 0; column < 3; ++column) {
             const auto slot = static_cast<std::size_t>(slots[static_cast<std::size_t>(column)]);
             ImGui::TableSetColumnIndex(column);
             ImGui::PushID(static_cast<int>(slot));
-            if (present[slot - 1]) {
-                bool lock_clicked = false;
-                render_rune_card(runes[slot - 1], mapping, locks, &lock_clicked, context_unit);
-                if (lock_clicked) clicked_slot = static_cast<int>(slot);
-            } else {
+            if (present[slot - 1])
+                render_rune_card(runes[slot - 1], mapping);
+            else
                 ImGui::TextColored(color::muted, "Slot %d : vide", static_cast<int>(slot));
-            }
             ImGui::PopID();
         }
     }
     ImGui::EndTable();
-    return clicked_slot;
 }
 
-std::uint64_t render_artifacts(const swcore::AccountMonster& monster, const fs::path& root,
-                               bool show_empty, const swcore::LockTable* locks) {
-    std::uint64_t clicked = 0;
+void render_artifacts(const swcore::AccountMonster& monster, const fs::path& root,
+                      bool show_empty) {
     static const IdNames labels = load_names(root / "data" / "i18n" / "en.json");
     static const IdNames attributes =
         load_names(root / "data" / "mapping" / "monster_attributes.json");
     static const IdNames archetypes =
         load_names(root / "data" / "mapping" / "monster_archetypes.json");
-    if (monster.artifacts.empty() && !show_empty) return clicked;
+    if (monster.artifacts.empty() && !show_empty) return;
     ImGui::SeparatorText("Artefacts équipés");
     for (int slot = 1; slot <= 2; ++slot) {
         const auto it = std::find_if(monster.artifacts.begin(), monster.artifacts.end(),
@@ -262,17 +314,6 @@ std::uint64_t render_artifacts(const swcore::AccountMonster& monster, const fs::
         if (it == monster.artifacts.end()) {
             if (show_empty) ImGui::TextColored(color::muted, "Slot %d : vide", slot);
             continue;
-        }
-        if (locks) {
-            ImGui::PushID(slot);
-            const auto* lock = locks->find(swcore::LockKind::Artifact, it->rid);
-            if (lock_button("##artifact_lock",
-                            lock ? swcore::LockState::Full : swcore::LockState::None,
-                            lock ? "Verrouillé pour " + lock->monster_name
-                                 : std::string{"Non verrouillé"}))
-                clicked = it->rid;
-            ImGui::PopID();
-            ImGui::SameLine();
         }
         // Slot 1 : artefact d'élément (attribut) ; slot 2 : d'archétype.
         const std::string kind = slot == 1
@@ -286,7 +327,6 @@ std::uint64_t render_artifacts(const swcore::AccountMonster& monster, const fs::
                                artifact_effect(labels, static_cast<int>(effect[0]), effect[1])
                                    .c_str());
     }
-    return clicked;
 }
 
 std::string set_bonus_text(const swcore::SetEffects& effects, int set_id, int activations) {

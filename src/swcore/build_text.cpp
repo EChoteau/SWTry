@@ -391,42 +391,64 @@ void print_build(std::ostream& out, const swcore::BuildReport& report,
     print_craft_blocks(out, report, mapping);
 }
 
-// Export CSV (séparateur ';') de tous les builds triés, scénario par scénario.
-bool export_builds_csv(const fs::path& path, const swcore::SolverReport& solver) {
-    std::ofstream output(path, std::ios::binary);
-    if (!output) return false;
+namespace {
+
+void write_csv_header(std::ostream& output) {
     output << "scenario;rang;score;rune_slot1;rune_slot2;rune_slot3;rune_slot4;"
               "rune_slot5;rune_slot6;PV;ATQ;DEF;VIT;Tx crit.;Dgts crit.;RES;Préc.;"
               "PV eff.;efficacite;meules;gemmes\n";
-    const auto line = [&](const std::string& scenario, std::size_t rank,
-                          double score,
-                          const std::array<std::uint64_t, 6>& ids,
-                          const swcore::StatValues& s, double ehp,
-                          double efficiency, int grinds, int gems) {
-        output << scenario << ';' << rank << ';' << format_number(score);
+}
+
+// Ligne du build `index` du scénario (builds ou all_builds selon le mode).
+void write_csv_line(std::ostream& output, const swcore::ScenarioReport& scenario,
+                    std::size_t index, std::size_t rank) {
+    const auto line = [&](double score, const std::array<std::uint64_t, 6>& ids,
+                          const swcore::StatValues& s, double ehp, double efficiency,
+                          int grinds, int gems) {
+        output << scenario.name << ';' << rank << ';' << format_number(score);
         for (const auto id : ids) output << ';' << id;
         output << ';' << s.hp << ';' << s.attack << ';' << s.defense << ';'
                << s.speed << ';' << s.crit_rate << ';' << s.crit_damage << ';'
                << s.resistance << ';' << s.accuracy << ';' << format_number(ehp)
                << ';' << fixed2(efficiency) << ';' << grinds << ';' << gems << '\n';
     };
-    for (const auto& scenario : solver.scenarios) {
-        if (scenario.all_builds_mode) {
-            for (std::size_t i = 0; i < scenario.all_builds.size(); ++i) {
-                const auto& b = scenario.all_builds[i];
-                line(scenario.name, i + 1, b.score, b.rune_ids, b.total,
-                     b.effective_hp, b.efficiency, b.grind_cost, b.gem_cost);
-            }
-            continue;
-        }
-        for (std::size_t i = 0; i < scenario.builds.size(); ++i) {
-            const auto& b = scenario.builds[i];
-            std::array<std::uint64_t, 6> ids{};
-            for (std::size_t s = 0; s < 6; ++s) ids[s] = b.runes[s].rune_id;
-            line(scenario.name, i + 1, b.score, ids, b.stats.total,
-                 b.metrics.effective_hp, b.efficiency, b.grind_cost, b.gem_cost);
-        }
+    if (scenario.all_builds_mode) {
+        const auto& b = scenario.all_builds[index];
+        line(b.score, b.rune_ids, b.total, b.effective_hp, b.efficiency, b.grind_cost,
+             b.gem_cost);
+        return;
     }
+    const auto& b = scenario.builds[index];
+    std::array<std::uint64_t, 6> ids{};
+    for (std::size_t s = 0; s < 6; ++s) ids[s] = b.runes[s].rune_id;
+    line(b.score, ids, b.stats.total, b.metrics.effective_hp, b.efficiency, b.grind_cost,
+         b.gem_cost);
+}
+
+}  // namespace
+
+// Export CSV (séparateur ';') de tous les builds triés, scénario par scénario.
+bool export_builds_csv(const fs::path& path, const swcore::SolverReport& solver) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) return false;
+    write_csv_header(output);
+    for (const auto& scenario : solver.scenarios) {
+        const std::size_t count = scenario.all_builds_mode ? scenario.all_builds.size()
+                                                           : scenario.builds.size();
+        for (std::size_t i = 0; i < count; ++i) write_csv_line(output, scenario, i, i + 1);
+    }
+    return static_cast<bool>(output);
+}
+
+bool export_builds_csv(const fs::path& path, const swcore::SolverReport& solver,
+                       const std::vector<std::pair<std::size_t, std::size_t>>& order) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output) return false;
+    write_csv_header(output);
+    std::size_t rank = 0;
+    for (const auto& [scenario, index] : order)
+        if (scenario < solver.scenarios.size())
+            write_csv_line(output, solver.scenarios[scenario], index, ++rank);
     return static_cast<bool>(output);
 }
 

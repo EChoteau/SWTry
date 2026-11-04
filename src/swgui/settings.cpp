@@ -20,6 +20,9 @@ Settings load_settings(const std::filesystem::path& user_directory) {
         settings.last_storage = root.value("last_storage", settings.last_storage);
         settings.window_width = root.value("window_width", settings.window_width);
         settings.window_height = root.value("window_height", settings.window_height);
+        if (const auto it = root.find("sections"); it != root.end() && it->is_object())
+            for (const auto& [name, open] : it->items())
+                if (open.is_boolean()) settings.sections[name] = open.get<bool>();
     } catch (const json::exception&) {
         // Réglages illisibles : on repart des valeurs par défaut.
     }
@@ -35,7 +38,8 @@ bool save_settings(const std::filesystem::path& user_directory,
     const json root{{"last_export", settings.last_export},
                     {"last_storage", settings.last_storage},
                     {"window_width", settings.window_width},
-                    {"window_height", settings.window_height}};
+                    {"window_height", settings.window_height},
+                    {"sections", settings.sections}};
     output << root.dump(2) << '\n';
     return static_cast<bool>(output);
 }

@@ -542,4 +542,26 @@ std::string SolverConfig::to_json() const {
     return root.dump(2);
 }
 
+std::string scenario_label(const SetScenario& scenario,
+                           const std::unordered_map<int, std::string>& set_names) {
+    if (scenario.any_set || scenario.sets.empty()) return "Tous sets";
+    std::string label;
+    for (const auto& requirement : scenario.sets) {
+        const auto it = set_names.find(requirement.set_id);
+        const std::string name = it != set_names.end()
+                                     ? it->second
+                                     : "Set " + std::to_string(requirement.set_id);
+        label += (label.empty() ? "" : " + ") + name + " " +
+                 std::to_string(requirement.pieces);
+    }
+    return label;
+}
+
+std::string scenario_display_name(const SetScenario& scenario,
+                                  const std::unordered_map<int, std::string>& set_names) {
+    // Un nom saisi (non vide, pas seulement des espaces) reste prioritaire.
+    if (scenario.name.find_first_not_of(" \t") != std::string::npos) return scenario.name;
+    return scenario_label(scenario, set_names);
+}
+
 }  // namespace swcore

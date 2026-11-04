@@ -1,6 +1,7 @@
 #pragma once
 
 #include "data_store.hpp"
+#include "gui_logic.hpp"
 #include "settings.hpp"
 
 #include "swcore/craft_audit.hpp"
@@ -45,32 +46,14 @@ struct MonsterRow {
     int quantity = 0;
 };
 
-// Ligne du tableau de résultats (compacte, ~120 octets).
-struct ResultRow {
-    std::array<std::uint64_t, 6> rune_ids{};
-    swcore::StatValues total;
-    std::int64_t effective_hp = 0;
-    std::int64_t effective_hp_broken_def = 0;
-    std::int64_t expected_damage = 0;
-    double efficiency = 0;
-    double score = 0;
-    std::uint16_t scenario = 0;
-    std::uint16_t sets_label = 0;  // index dans App::set_labels_
-    std::uint8_t grinds = 0;
-    std::uint8_t gems = 0;
-    bool compact = false;          // vrai : ScenarioReport::all_builds
-    std::uint32_t index = 0;       // index dans builds ou all_builds
-};
-
-// Onglet fermable de la barre commune Monstres / Optimiseur : un build
-// (résultat ou build sauvegardé) ou la fiche d'un monstre "en l'état".
+// Onglet fermable de la barre d'onglets du haut : un build (résultat ou build
+// sauvegardé) ou la fiche d'un monstre "en l'état".
 struct WorkspaceTab {
     enum class Kind { Build, Monster };
     Kind kind = Kind::Build;
     std::string title;
     int uid = 0;
     bool open = true;
-    bool focus = true;
     // Monstre affiché : copie de l'export (ou de l'instantané d'un build sauvegardé).
     swcore::AccountMonster target;
     // Build
@@ -92,7 +75,11 @@ struct SavedBuild {
     std::string monster;
     std::string scenario;
     std::string date;
+    std::string sets;
     double score = 0;
+    std::uint64_t unit_id = 0;
+    std::array<std::uint64_t, 6> rune_ids{};
+    std::array<int, 6> variants{};
 };
 
 class App {
@@ -108,6 +95,10 @@ public:
     // --selftest : rend sans fenêtre la fiche de chaque monstre possédé et vérifie
     // qu'elle affiche les mêmes stats que la ligne du tableau. Retourne les erreurs.
     std::vector<std::string> selftest_monster_sheets();
+    // --selftest : rend sans fenêtre chaque page avec ces résultats chargés, un
+    // onglet de build ouvert puis fermé. N'écrit rien dans data/user.
+    std::vector<std::string> selftest_pages(const swcore::SolverReport& report,
+                                            const swcore::SolverConfig& config);
 
 private:
     enum class Page { Data, Monsters, Optimizer, SavedBuilds, EquipLocks };
@@ -117,7 +108,6 @@ private:
         std::function<void()> undo;
         double until = 0;
     };
-    enum class FixedTab { None, Monsters, Search };
 
     // Coque et page Données (app.cpp)
     void render_menu();
@@ -133,9 +123,6 @@ private:
 
     // Verrous (app_locks.cpp) : chaque changement est écrit dans locks.json.
     std::string owner_name(std::uint64_t unit_id) const;
-    void toggle_rune_lock(const swcore::Rune& rune);  // pour le monstre qui l'équipe
-    void toggle_rune_lock_for(const swcore::Rune& rune, std::uint64_t unit_id);
-    void toggle_artifact_lock(const swcore::Artifact& artifact);
     void set_monster_locks(const swcore::AccountMonster& monster, bool lock, bool runes,
                            bool artifacts);
     void locks_changed();
@@ -149,11 +136,13 @@ private:
     std::string equip_todo_text() const;
     void render_build_actions(WorkspaceTab& tab);  // boutons Équiper / Verrouiller
 
-    // Barre d'onglets commune Monstres / Optimiseur (app_workspace.cpp)
-    void render_workspace();
+    // Barre d'onglets du haut et fiches de monstre (app_workspace.cpp)
+    void render_tab_strip();
+    WorkspaceTab* active_tab();
+    void activate_tab(int uid);
     void open_monster_tab(const MonsterRow& row);
     void render_monster_tab(WorkspaceTab& tab);
-    std::string monster_sheet_text(const WorkspaceTab& tab) const;
+    void render_monster_lock_panel(const swcore::AccountMonster& monster);
 
     // Liste des monstres (app_monsters.cpp)
     void render_monsters_list();
@@ -162,6 +151,7 @@ private:
 
     // Recherche : paramètres (app_optimizer.cpp)
     void render_search_tab();
+    bool section(const char* label);  // en-tête repliable, état mémorisé
     void render_config_files();
     void render_target_and_pool();
     void render_lock_settings();
@@ -181,7 +171,10 @@ private:
     // Résultats (app_results.cpp)
     void build_result_rows();
     void render_results();
+    void render_pagination();
     void request_result_sort(const ImGuiTableSortSpecs* specs);
+    void refresh_result_view();  // filtre de scénario sur l'ordre trié
+    void apply_result_sort();    // trie tous les builds selon sort_keys_
     void stop_sort();
     std::string set_label(const std::array<std::uint64_t, 6>& rune_ids);
     void export_results_csv();
@@ -199,8 +192,9 @@ private:
 
     DataStore& data_;
     Settings& settings_;
-    Page page_ = Page::Data;
-    FixedTab select_fixed_ = FixedTab::None;
+    ViewState view_{static_cast<int>(Page::Data), 0};
+    Page page() const { return static_cast<Page>(view_.page); }
+    void show_page(Page page) { view_.show_page(static_cast<int>(page)); }
     std::string status_;
     bool show_warnings_ = false;
 
@@ -228,7 +222,10 @@ private:
     swcore::CraftRanges gem_ranges_;     // enchanted_gem.json
     std::string config_signature_;
     std::array<std::size_t, 6> candidate_counts_{};
-    std::size_t lock_excluded_ = 0;  // runes exclues par verrou (monstre cible)
+    std::size_t lock_excluded_ = 0;            // runes exclues par verrou (monstre cible)
+    std::size_t lock_excluded_artifacts_ = 0;  // artefacts exclus par verrou
+    float parameters_height_ = 0;              // zone des paramètres (séparateur)
+    std::int64_t last_elapsed_ms_ = 0;         // durée de la dernière recherche
     char config_name_[64] = {};
     char target_filter_[64] = {};
     char locked_filter_[64] = {};
@@ -241,7 +238,12 @@ private:
 
     // Résultats
     std::vector<ResultRow> rows_;
-    std::vector<std::uint32_t> row_order_;
+    std::vector<std::uint32_t> row_order_;   // tous les builds, tri en cours
+    std::vector<std::uint32_t> view_order_;  // après le filtre de scénario
+    int scenario_filter_ = -1;               // -1 : tous
+    Pager pager_;
+    SortKeys sort_keys_{{kColScore, false}};  // tri initial : Score décroissant
+    float parameters_content_ = 0;           // hauteur utile des paramètres (image précédente)
     std::vector<std::string> set_labels_;
     std::size_t selected_row_ = static_cast<std::size_t>(-1);
     std::jthread sort_thread_;

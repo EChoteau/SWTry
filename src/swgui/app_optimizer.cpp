@@ -72,7 +72,7 @@ void App::reset_config() {
     fresh.pool.target_unit_id = config_.pool.target_unit_id;  // garde le monstre
     fresh.pool.minimum_rune_level = 12;
     fresh.pool.minimum_stars = 6;
-    fresh.scenarios = {{"Tous sets", {}, true}};
+    fresh.scenarios = {{"", {}, true}};  // nom généré : "Tous sets"
     fresh.objective.weights = {{"attack", 1.0}};
     fresh.limits.top_n = 50;
     fresh.limits.time_budget_ms = 30000;
@@ -95,10 +95,26 @@ void App::normalize_config() {
     for (auto& name : config_.objective.sort_metrics) name = canonical_metric(name);
 }
 
+// Trois zones verticales : paramètres (défilants, séparateur déplaçable),
+// barre fixe de lancement, panneau de résultats toujours visible (>= 35 %).
 void App::render_search_tab() {
-    ImGui::BeginChild("##parameters",
-                      ImVec2(0, ImGui::GetContentRegionAvail().y * 0.55f),
-                      ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float total = ImGui::GetContentRegionAvail().y;
+    const float bar = ImGui::GetFrameHeightWithSpacing() * 2.0f + style.WindowPadding.y;
+    const float splitter = 6.0f;
+    const float spacing = style.ItemSpacing.y * 3.0f;
+    const float min_params = ImGui::GetFrameHeightWithSpacing() * 3.0f;
+    const float max_params =
+        std::max(min_params, total - bar - splitter - spacing - total * 0.35f);
+    if (parameters_height_ <= 0) parameters_height_ = total * 0.45f;
+    parameters_height_ = std::clamp(parameters_height_, min_params, max_params);
+    // Sections repliées : la zone se réduit à leur hauteur (pas de grand vide).
+    float height = parameters_height_;
+    if (parameters_content_ > 0)
+        height = std::clamp(parameters_content_ + style.WindowPadding.y * 2.0f, min_params,
+                            parameters_height_);
+
+    ImGui::BeginChild("##parameters", ImVec2(0, height), ImGuiChildFlags_Borders);
     render_config_files();
     render_target_and_pool();
     render_lock_settings();
@@ -109,13 +125,58 @@ void App::render_search_tab() {
     render_craft(false);
     render_craft(true);
     render_limits();
+    parameters_content_ = ImGui::GetCursorPosY() - style.WindowPadding.y;
     ImGui::EndChild();
+
+    // Séparateur déplaçable à la souris.
+    ImGui::InvisibleButton("##splitter", ImVec2(-1.0f, splitter));
+    if (ImGui::IsItemActive()) {
+        parameters_height_ = std::clamp(height + ImGui::GetIO().MouseDelta.y, min_params,
+                                        max_params);
+        parameters_content_ = 0;  // l'utilisateur choisit la hauteur
+    }
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    {
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        const float y = (min.y + max.y) * 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(min.x, y), ImVec2(max.x, y),
+            ImGui::GetColorU32(ImGui::IsItemHovered() || ImGui::IsItemActive()
+                                   ? ImGuiCol_SeparatorHovered
+                                   : ImGuiCol_Separator),
+            2.0f);
+    }
+
+    ImGui::BeginChild("##run_bar", ImVec2(0, bar), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollbar);
     render_run_controls();
+    ImGui::EndChild();
+
+    ImGui::BeginChild("##results_panel", ImVec2(0, 0), ImGuiChildFlags_Borders);
     render_results();
+    ImGui::EndChild();
+}
+
+bool App::section(const char* label) {
+    // Premier lancement : tout replié sauf "Monstre et pool" ; ensuite l'état
+    // ouvert / fermé est mémorisé dans settings.json.
+    const auto it = settings_.sections.find(label);
+    const bool stored = it != settings_.sections.end()
+                            ? it->second
+                            : std::string_view(label) == "Monstre et pool";
+    ImGui::SetNextItemOpen(stored, ImGuiCond_Once);
+    const bool open = ImGui::CollapsingHeader(label);
+    if (open != stored) {
+        settings_.sections[label] = open;
+        save_settings(data_.user_directory(), settings_);
+    }
+    return open;
 }
 
 void App::render_config_files() {
-    if (!ImGui::CollapsingHeader("Configurations")) return;
+    if (!section("Configurations")) return;
     const fs::path directory = data_.user_directory() / "configs";
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
     ImGui::InputTextWithHint("##config_name", "Nom de la configuration", config_name_,
@@ -193,7 +254,7 @@ void App::render_config_files() {
 }
 
 void App::render_target_and_pool() {
-    if (!ImGui::CollapsingHeader("Monstre et pool", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    if (!section("Monstre et pool")) return;
 
     // Monstre cible : liste déroulante avec recherche.
     const auto* target =
@@ -224,7 +285,8 @@ void App::render_target_and_pool() {
 
     ImGui::Checkbox("Runes de l'inventaire uniquement", &config_.pool.inventory_only);
 
-    // Monstres verrouillés (leurs runes ne sont pas utilisées).
+    // Exclusion temporaire (locked_unit_ids de la config nommée) : sans rapport
+    // avec la table des verrous.
     auto& locked = config_.pool.locked_unit_ids;
     const std::string locked_preview = std::to_string(locked.size()) + " monstre(s)";
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
@@ -235,7 +297,8 @@ void App::render_target_and_pool() {
                                  sizeof locked_filter_);
         const std::string filter = fold(locked_filter_);
         for (const auto& monster : data_.monsters) {
-            if (monster.runes.empty()) continue;  // sans runes : rien à verrouiller
+            // Rien à exclure sans rune ni artefact porté.
+            if (monster.runes.empty() && monster.artifacts.empty()) continue;
             const std::string name = monster_name(monster.unit_master_id);
             if (!filter.empty() && fold(name).find(filter) == std::string::npos) continue;
             bool checked = std::find(locked.begin(), locked.end(), monster.unit_id) !=
@@ -252,9 +315,12 @@ void App::render_target_and_pool() {
     }
 
     ImGui::SameLine();
+    ImGui::BeginDisabled(locked.empty());
+    if (ImGui::Button("Vider##excluded")) locked.clear();
+    ImGui::EndDisabled();
     ImGui::TextColored(color::muted,
-                       "toutes les runes de ces monstres sont ignorées pour cette recherche "
-                       "(locked_unit_ids, sans rapport avec les verrous)");
+                       "Exclut les runes et artefacts actuellement portés par ces monstres de "
+                       "CETTE recherche uniquement. Rien n'est verrouillé.");
 
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
     ImGui::SliderInt("Niveau minimum des runes", &config_.pool.minimum_rune_level, 0, 15);
@@ -276,7 +342,7 @@ void App::render_target_and_pool() {
 }
 
 void App::render_lock_settings() {
-    if (!ImGui::CollapsingHeader("Verrous", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    if (!section("Verrous permanents")) return;
     int mode = config_.locks.mode == swcore::LockMode::Ignore ? 1 : 0;
     ImGui::RadioButton("Respecter les verrous", &mode, 0);
     ImGui::SameLine();
@@ -286,12 +352,15 @@ void App::render_lock_settings() {
     ImGui::Checkbox("Garder les runes verrouillées de ce monstre (slots figés)",
                     &config_.locks.keep_target_locked);
     ImGui::EndDisabled();
-    ImGui::TextColored(color::muted, "%s rune(s) exclue(s) par verrou pour ce monstre",
-                       group_digits(static_cast<long long>(lock_excluded_)).c_str());
+    ImGui::TextColored(color::muted, "%s runes et %s artefacts exclus par verrou",
+                       group_digits(static_cast<long long>(lock_excluded_)).c_str(),
+                       group_digits(static_cast<long long>(lock_excluded_artifacts_)).c_str());
+    ImGui::SameLine();
+    if (ImGui::TextLink("Gérer les verrous")) show_page(Page::Monsters);
 }
 
 void App::render_scenarios() {
-    if (!ImGui::CollapsingHeader("Sets")) return;
+    if (!section("Sets")) return;
     // Sets connus du mapping, triés par nom.
     std::vector<std::pair<std::string, int>> sets;
     for (const auto& [id, name] : data_.mapping.set_names) sets.emplace_back(name, id);
@@ -305,7 +374,9 @@ void App::render_scenarios() {
         ImGui::PushID(static_cast<int>(i));
         ImGui::SeparatorText(("Scénario " + std::to_string(i + 1)).c_str());
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
-        ImGui::InputText("Nom", &scenario.name);
+        // Vide : nom généré depuis les sets (affiché en indication) ; un nom saisi prime.
+        const std::string generated = swcore::scenario_label(scenario, data_.mapping.set_names);
+        ImGui::InputTextWithHint("Nom", generated.c_str(), &scenario.name);
         ImGui::SameLine();
         ImGui::Checkbox("Tous sets", &scenario.any_set);
         ImGui::SameLine();
@@ -363,13 +434,13 @@ void App::render_scenarios() {
                          scenarios[*duplicate]);
     if (remove) scenarios.erase(scenarios.begin() + static_cast<std::ptrdiff_t>(*remove));
     if (ImGui::Button("Ajouter un scénario"))
-        scenarios.push_back({"Scénario " + std::to_string(scenarios.size() + 1), {}, false});
+        scenarios.push_back({"", {}, false});  // nom généré depuis les sets
     if (scenarios.empty())
         ImGui::TextColored(color::warning, "Aucun scénario : aucune recherche ne sera lancée.");
 }
 
 void App::render_main_stats() {
-    if (!ImGui::CollapsingHeader("Stats principales (slots 2, 4, 6)")) return;
+    if (!section("Stats principales (slots 2, 4, 6)")) return;
     ImGui::TextColored(color::muted, "Slots 1, 3 et 5 : stat principale fixe. "
                                      "Aucune case cochée = toutes autorisées.");
     for (const int slot : {2, 4, 6}) {
@@ -404,7 +475,7 @@ void App::render_main_stats() {
 }
 
 void App::render_constraints() {
-    if (!ImGui::CollapsingHeader("Contraintes")) return;
+    if (!section("Contraintes")) return;
     if (!ImGui::BeginTable("##constraints", 3,
                            ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                                ImGuiTableFlags_SizingFixedFit))
@@ -455,7 +526,7 @@ void App::render_constraints() {
 }
 
 void App::render_objective() {
-    if (!ImGui::CollapsingHeader("Objectif")) return;
+    if (!section("Objectif")) return;
     if (ImGui::Button("Réinitialiser l'objectif")) {
         config_.objective.weights = {{"attack", 1.0}};
         config_.objective.caps.clear();
@@ -515,7 +586,7 @@ void App::render_objective() {
 }
 
 void App::render_craft(bool gems) {
-    if (!ImGui::CollapsingHeader(gems ? "Gemmes" : "Meules")) return;
+    if (!section(gems ? "Gemmes" : "Meules")) return;
     ImGui::PushID(gems ? "gems" : "grinds");
     auto& rules = gems ? config_.gems : config_.grindstones;
     const auto& ranges = gems ? gem_ranges_ : grind_ranges_;
@@ -546,7 +617,7 @@ void App::render_craft(bool gems) {
                                all_rarity[which] + 1, 0};
     }
     ImGui::TextColored(color::muted, gems ? "Stats autorisées pour la gemme (par stat)."
-                                          : "Stats meulables : PV, ATQ, DEF (fixe et %), VIT.");
+                                          : "Stats meulables : PV, ATQ, DEF (fixe et %%), VIT.");
 
     if (ImGui::BeginTable("##rules", 4, ImGuiTableFlags_RowBg |
                                            ImGuiTableFlags_BordersInnerV |
@@ -602,18 +673,28 @@ void App::render_craft(bool gems) {
         ImGui::EndTable();
     }
 
-    auto& limit = gems ? config_.max_new_gems : config_.max_new_grinds;
-    bool unlimited = !limit.has_value();
-    if (ImGui::Checkbox(gems ? "Nombre de nouvelles gemmes illimité"
-                             : "Nombre de nouvelles meules illimité",
-                        &unlimited))
-        limit = unlimited ? std::nullopt : std::optional<int>{2};
-    if (limit) {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
-        int value = *limit;
-        ImGui::InputInt(gems ? "max_new_gems" : "max_new_grinds", &value);
-        limit = std::max(0, value);
+    // Gemmes : plafond visible. Meules : meulage complet par défaut ; le plafond
+    // (max_new_grinds) est rangé dans "Avancé", replié.
+    const bool show_limit = gems || ImGui::TreeNode("Avancé");
+    if (show_limit) {
+        auto& limit = gems ? config_.max_new_gems : config_.max_new_grinds;
+        if (!gems)
+            ImGui::TextColored(color::muted,
+                               "Limite le nombre de meules ; active le choix des meules à "
+                               "poser, sinon toutes les substats sélectionnées sont meulées.");
+        bool unlimited = !limit.has_value();
+        if (ImGui::Checkbox(gems ? "Nombre de nouvelles gemmes illimité"
+                                 : "Aucun plafond (meulage complet)",
+                            &unlimited))
+            limit = unlimited ? std::nullopt : std::optional<int>{2};
+        if (limit) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+            int value = *limit;
+            ImGui::InputInt(gems ? "max_new_gems" : "max_new_grinds", &value);
+            limit = std::max(0, value);
+        }
+        if (!gems) ImGui::TreePop();
     }
     if (gems)
         ImGui::Checkbox("Regemmer les runes déjà gemmées (regem_existing)",
@@ -628,7 +709,7 @@ void App::render_craft(bool gems) {
 }
 
 void App::render_limits() {
-    if (!ImGui::CollapsingHeader("Limites")) return;
+    if (!section("Limites")) return;
     auto& limits = config_.limits;
     bool all = limits.top_n == 0;
     if (ImGui::Checkbox("Tous les builds valides", &all)) limits.top_n = all ? 0 : 50;
@@ -680,6 +761,18 @@ void App::render_run_controls() {
         counted.lock_table = data_.locks;
         candidate_counts_ = swcore::count_candidate_runes(data_.runes, counted);
         lock_excluded_ = swcore::count_lock_excluded_runes(data_.runes, counted);
+        // Artefacts (portés ou non) que les verrous réservent à un autre monstre.
+        lock_excluded_artifacts_ = 0;
+        if (config_.locks.mode == swcore::LockMode::Respect) {
+            const std::uint64_t target = config_.pool.target_unit_id.value_or(0);
+            const auto count = [&](const swcore::Artifact& artifact) {
+                lock_excluded_artifacts_ +=
+                    swcore::artifact_usable_by(data_.locks, artifact, target) ? 0 : 1;
+            };
+            for (const auto& monster : data_.monsters)
+                for (const auto& artifact : monster.artifacts) count(artifact);
+            for (const auto& artifact : data_.state.spare_artifacts) count(artifact);
+        }
         config_signature_ = signature;
     }
     std::string counts;
@@ -696,6 +789,11 @@ void App::render_run_controls() {
         if (!ready) {
             ImGui::SameLine();
             ImGui::TextColored(color::muted, "Choisissez un monstre cible.");
+        } else if (report_) {
+            ImGui::SameLine();
+            ImGui::TextColored(color::muted, "Dernière recherche : %.1f s, %s builds trouvés",
+                               static_cast<double>(last_elapsed_ms_) / 1000.0,
+                               group_digits(static_cast<long long>(rows_.size())).c_str());
         }
     } else {
         if (ImGui::Button("Annuler")) {
@@ -731,7 +829,9 @@ void App::start_search() {
 
 void App::poll_search() {
     if (!solving_) return;
-    if (!solver_.snapshot().finished) return;
+    const auto snapshot = solver_.snapshot();
+    if (!snapshot.finished) return;
+    last_elapsed_ms_ = snapshot.elapsed_ms;
     report_ = solver_.take_result();
     solving_ = false;
     for (auto& message : solver_.take_warnings())

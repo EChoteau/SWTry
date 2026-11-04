@@ -142,7 +142,11 @@ void App::render_build_actions(WorkspaceTab& tab) {
                    " objet(s)";
             if (!result.released.empty()) {
                 text += " ; ancien(s) verrou(s) libéré(s) :";
-                for (const auto& lock : result.released) text += " " + std::to_string(lock.id);
+                for (const auto& lock : result.released)
+                    text += lock.kind == swcore::LockKind::Rune
+                                ? " " + swcore::text::set_name(data_.mapping, lock.set_id) +
+                                      " slot " + std::to_string(lock.slot)
+                                : " artefact slot " + std::to_string(lock.slot);
             }
         }
         locks_changed();

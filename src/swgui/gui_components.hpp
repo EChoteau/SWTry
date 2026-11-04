@@ -29,30 +29,27 @@ struct StatComparison {
 
 void render_stat_comparison(const StatComparison& stats);
 
-// Carte de rune (réalité, lignes simulées en couleur d'accent).
 // Cadenas dessiné (ImDrawList) : aucun / partiel / complet. Vrai si cliqué.
 bool lock_button(const char* id, swcore::LockState state, const std::string& tooltip);
+// Gros cadenas non cliquable (fiche monstre) : ouvert gris, partiel à moitié
+// rempli, fermé plein couleur d'accent.
+void big_padlock(swcore::LockState state, float size);
 
-// Avec une table de verrous, la carte porte un cadenas ; *lock_clicked si cliqué.
-// context_unit : monstre du contexte ; une rune verrouillée pour un autre monstre
-// a un état distinct ("verrouillé pour <monstre>").
-void render_rune_card(const swcore::RuneView& view, const swcore::RuneMapping& mapping,
-                      const swcore::LockTable* locks = nullptr,
-                      bool* lock_clicked = nullptr, std::uint64_t context_unit = 0);
+// Origine d'une rune pour l'affichage : nom du monstre ou "Inventaire", sans id.
+std::string origin_label(const swcore::Rune& rune);
+
+// Carte de rune (réalité, lignes simulées en couleur d'accent). Aucun id
+// affiché, aucun verrouillage d'une rune isolée.
+void render_rune_card(const swcore::RuneView& view, const swcore::RuneMapping& mapping);
 
 // 6 cartes 6-1-2 / 5-4-3 ; un slot absent affiche "vide".
-// Retourne le slot (1..6) dont le cadenas a été cliqué, 0 sinon.
-int render_rune_cards(const std::array<swcore::RuneView, 6>& runes,
+void render_rune_cards(const std::array<swcore::RuneView, 6>& runes,
                        const std::array<bool, 6>& present,
-                       const swcore::RuneMapping& mapping,
-                       const swcore::LockTable* locks = nullptr,
-                       std::uint64_t context_unit = 0);
+                       const swcore::RuneMapping& mapping);
 
 // Artefacts équipés (attribut / archétype, effets) ; "vide" si show_empty.
-// Retourne l'id (rid) de l'artefact dont le cadenas a été cliqué, 0 sinon.
-std::uint64_t render_artifacts(const swcore::AccountMonster& monster,
-                               const std::filesystem::path& root, bool show_empty,
-                               const swcore::LockTable* locks = nullptr);
+void render_artifacts(const swcore::AccountMonster& monster,
+                      const std::filesystem::path& root, bool show_empty);
 
 // Bonus d'un set : "2 p. : ATQ +15%" (activations = 0) ou le bonus cumulé.
 std::string set_bonus_text(const swcore::SetEffects& effects, int set_id,

@@ -94,6 +94,13 @@ int run_selftest() {
     std::printf("selftest: fiches de %d monstres : %s\n",
                 static_cast<int>(data.monsters.size()), errors.empty() ? "OK" : "ECHEC");
     ok = ok && errors.empty();
+
+    // Toutes les pages rendues sans fenêtre avec ces résultats chargés.
+    const auto page_errors = app.selftest_pages(report, config);
+    for (const auto& error : page_errors) std::printf("selftest: %s\n", error.c_str());
+    std::printf("selftest: pages, résultats et onglets : %s\n",
+                page_errors.empty() ? "OK" : "ECHEC");
+    ok = ok && page_errors.empty();
     std::fflush(stdout);
     return ok ? 0 : 1;
 }

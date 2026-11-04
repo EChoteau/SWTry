@@ -115,7 +115,8 @@ if(SW_BUILD_GUI)
         src/swgui/monster_view.cpp
         src/swgui/snapshot.cpp
         src/swgui/app_locks.cpp
-        src/swgui/app_equip.cpp)
+        src/swgui/app_equip.cpp
+        src/swgui/gui_logic.cpp)
     target_include_directories(swgui SYSTEM PRIVATE ${pfd_SOURCE_DIR})
     target_link_libraries(swgui PRIVATE swcore imgui project_warnings)
     if(WIN32)
@@ -153,7 +154,8 @@ if(SW_BUILD_TESTS)
         tests/locks_test.cpp
         tests/equip_test.cpp
         src/swgui/monster_view.cpp
-        src/swgui/snapshot.cpp)
+        src/swgui/snapshot.cpp
+        src/swgui/gui_logic.cpp)
     target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swgui)
     target_compile_definitions(tests PRIVATE
         SW_PROJECT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

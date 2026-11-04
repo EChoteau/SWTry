@@ -129,8 +129,11 @@ TEST_CASE("A3 only listed or grindable stats; never main, innate or 9-12",
         [&](const std::string& w) { warnings.push_back(w); });
     const auto all = variants(config);
     show("A3 default seul (toutes les meulables)", all);
-    // Lignes meulables de la rune : ATQ% (1) et VIT (2) -> 2 x 2 variantes.
-    CHECK(all.size() == 4);
+    // Lignes meulables de la rune : ATQ% (1) et VIT (2). Meulage complet : la
+    // rune telle quelle (diagnostic) puis UNE version où les deux sont meulées.
+    REQUIRE(all.size() == 2);
+    CHECK(all[1].grinds == 2);
+    CHECK(all[1].rune.applied_grindstones.size() == 2);
     for (const auto& variant : all) {
         CHECK(variant.rune.primary->value == real_rune().primary->value);
         CHECK(variant.rune.secondary[0].grind == real_rune().secondary[0].grind);  // Tx crit.
@@ -203,7 +206,8 @@ TEST_CASE("B3 gem rules: one gem, no duplicate stat, enchanted line only",
         CHECK(enchanted == 1);
     }
 
-    // Meule perdue sur la ligne gemmée (5 -> 0), puis meulable à nouveau.
+    // Meule perdue sur la ligne gemmée (5 -> 0), puis meulée à nouveau
+    // (meulage complet : la version gemmée est aussi meulée).
     swcore::SolverConfig both = gem(2, GrindstoneMode::Max, 5);
     both.grindstones[2] = {GrindstoneMode::Max, 5, 0};
     const auto gem_then_grind = variants(both);
@@ -211,13 +215,12 @@ TEST_CASE("B3 gem rules: one gem, no duplicate stat, enchanted line only",
     bool lost = false;
     bool reground = false;
     for (const auto& variant : gem_then_grind) {
-        if (variant.gems == 1 && variant.grinds == 0) {
-            lost = variant.rune.secondary[1].grind == 0 &&
-                   variant.rune.applied_gems.at(0).old_grind == 5;
-        }
-        if (variant.gems == 1 && variant.grinds == 1)
-            reground = variant.rune.secondary[1].value.stat_id == 2 &&
-                       variant.rune.secondary[1].grind == 10;
+        if (variant.gems != 1) continue;
+        CHECK(variant.grinds == 1);  // pas de version gemmée non meulée
+        lost = variant.rune.applied_gems.at(0).old_grind == 5 &&
+               variant.rune.applied_grindstones.at(0).previous == 0;
+        reground = variant.rune.secondary[1].value.stat_id == 2 &&
+                   variant.rune.secondary[1].grind == 10;
     }
     CHECK(lost);
     CHECK(reground);
@@ -408,9 +411,16 @@ TEST_CASE("C4 a set scenario valid only with craft is not dropped upstream",
     REQUIRE(crafted.scenarios.size() == 1);
     CHECK(crafted.scenarios[0].nodes > 0);
     REQUIRE_FALSE(crafted.scenarios[0].builds.empty());
-    // Une meule suffit (108 + 11 + 6 = 125) ; à score égal, le moins de meules.
-    CHECK(crafted.scenarios[0].builds.front().stats.total.speed == 125);
-    CHECK(crafted.scenarios[0].builds.front().grind_cost == 1);
+    // Meulage complet : les deux lignes VIT sont meulées (108 + 11 + 11 = 130).
+    CHECK(crafted.scenarios[0].builds.front().stats.total.speed == 130);
+    CHECK(crafted.scenarios[0].builds.front().grind_cost == 2);
+    // Avec un plafond d'une meule : le choix des meules revient (125, 1 meule).
+    config.max_new_grinds = 1;
+    const auto capped = swcore::solve_runes(target, pool, {}, config, kMapping);
+    REQUIRE_FALSE(capped.scenarios.at(0).builds.empty());
+    CHECK(capped.scenarios[0].builds.front().stats.total.speed == 125);
+    CHECK(capped.scenarios[0].builds.front().grind_cost == 1);
+    config.max_new_grinds.reset();
     // Borne max de la contrainte : calculée avec les variantes meulées.
     CHECK(crafted.scenarios[0].constraint_upper_bounds.at("speed") >= 130);
     CHECK(raw.scenarios[0].constraint_upper_bounds.at("speed") == 120);

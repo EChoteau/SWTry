@@ -69,6 +69,11 @@ struct SearchState {
     const SolveControl* control = nullptr;
     Clock::time_point run_started{};
     std::uint64_t found_before = 0;
+    // Une ligne par combinaison de 6 runes : actif dès qu'une rune a plusieurs
+    // variantes (gemmes, plafond de meules). Mode tous les builds : index
+    // (empreinte des 6 ids -> position dans all_builds).
+    bool dedupe = false;
+    std::unordered_multimap<std::uint64_t, std::uint32_t> combination_index{};
 };
 
 std::uint64_t builds_found(const SearchState& state) {
@@ -401,8 +406,13 @@ std::vector<Rune> gem_states(const Rune& rune, const SolverConfig& config,
 }
 
 // Toutes les variantes de craft d'une rune, avant dominance :
-// (sans gemme | chaque gemme possible) x (chaque sous-ensemble de lignes dont la
-// meule changerait). Coûts = nombre de meules et de gemmes.
+// (sans gemme | chaque gemme possible) x meules. Meules :
+// - max_new_grinds absent (défaut) : meulage complet, UNE seule version par
+//   état de gemme, où toutes les lignes meulables des stats sélectionnées sont
+//   meulées (aucun choix, aucun sous-ensemble) ;
+// - max_new_grinds présent : chaque sous-ensemble de lignes dont la meule
+//   changerait (choix des meules à poser sous le plafond).
+// Coûts = nombre de lignes réellement modifiées (meules) et de gemmes.
 std::vector<Candidate> enumerate_variants(const Rune& rune, int real_level,
                                           const SolverConfig& config,
                                           const CraftRanges& grind_ranges,
@@ -435,7 +445,9 @@ std::vector<Candidate> enumerate_variants(const Rune& rune, int real_level,
                     options.push_back({j, value, rule->second.rarity});
             }
         }
-        for (std::size_t mask = 0; mask < (std::size_t{1} << options.size()); ++mask) {
+        const std::size_t all = (std::size_t{1} << options.size()) - 1;
+        const std::size_t first_mask = config.max_new_grinds ? 0 : all;
+        for (std::size_t mask = first_mask; mask <= all; ++mask) {
             Candidate candidate;
             candidate.rune = base;
             candidate.gem_cost = s == 0 ? 0 : 1;
@@ -600,12 +612,54 @@ bool better_compact(const CompactBuild& left, const CompactBuild& right) {
     return left.variants < right.variants;
 }
 
-// Mode top_n = 0 : enregistre un build valide (score minimum, plafond).
+// Empreinte d'une combinaison de 6 runes (ids par slot).
+std::uint64_t combination_hash(const std::array<std::uint64_t, 6>& ids) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const auto id : ids) {
+        hash ^= id + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+// Entre deux variantes de la MÊME combinaison de runes : score le plus haut,
+// puis le moins de modifications simulées, puis l'ordre déterministe existant.
+bool better_variant(const SolverBuild& left, const SolverBuild& right,
+                    const ObjectiveConfig& objective) {
+    if (left.score != right.score) return left.score > right.score;
+    const int l = left.grind_cost + left.gem_cost;
+    const int r = right.grind_cost + right.gem_cost;
+    if (l != r) return l < r;
+    return better(left, right, objective);
+}
+
+bool better_compact_variant(const CompactBuild& left, const CompactBuild& right) {
+    if (left.score != right.score) return left.score > right.score;
+    const int l = left.grind_cost + left.gem_cost;
+    const int r = right.grind_cost + right.gem_cost;
+    if (l != r) return l < r;
+    return better_compact(left, right);
+}
+
+// Mode top_n = 0 : enregistre un build valide (score minimum, plafond). Une
+// combinaison déjà enregistrée n'est gardée qu'une fois (meilleure variante).
 void record_compact(SearchState& state, CompactBuild build) {
     const auto& limits = state.config.limits;
     if (limits.min_score && build.score < *limits.min_score) {
         ++state.report.cuts_objective;
         return;
+    }
+    if (state.dedupe) {
+        auto& all = state.report.all_builds;
+        const auto key = combination_hash(build.rune_ids);
+        const auto [first, last] = state.combination_index.equal_range(key);
+        for (auto it = first; it != last; ++it) {
+            auto& existing = all[it->second];
+            if (existing.rune_ids != build.rune_ids) continue;
+            if (better_compact_variant(build, existing)) existing = build;
+            return;  // même combinaison : pas de nouvelle ligne
+        }
+        state.combination_index.emplace(key, static_cast<std::uint32_t>(all.size()));
     }
     state.report.all_builds.push_back(build);
     ++state.report.valid_builds;
@@ -726,6 +780,18 @@ void insert_build(SearchState& state, SolverBuild build,
                                build.score, build.metrics.effective_hp,
                                build.efficiency, build.grind_cost, build.gem_cost});
         return;
+    }
+    // Même combinaison déjà conservée : on garde la meilleure variante, avant de
+    // remplir top_n (les variantes ne consomment pas de place).
+    if (state.dedupe) {
+        const auto ids = rune_ids(build.runes);
+        const auto same = std::find_if(
+            state.report.builds.begin(), state.report.builds.end(),
+            [&](const SolverBuild& kept) { return rune_ids(kept.runes) == ids; });
+        if (same != state.report.builds.end()) {
+            if (!better_variant(build, *same, state.config.objective)) return;
+            state.report.builds.erase(same);
+        }
     }
     const auto position = std::upper_bound(
         state.report.builds.begin(), state.report.builds.end(), build,
@@ -1504,8 +1570,13 @@ std::vector<RuneCraftVariant> list_craft_variants(
             ? CraftRanges{}
             : load_craft_ranges(mapping_directory / "enchanted_gem.json");
     std::vector<RuneCraftVariant> result;
-    for (auto& candidate : enumerate_variants(rune, rune.upgrade_level, config,
-                                              grind_ranges, gem_ranges))
+    auto variants =
+        enumerate_variants(rune, rune.upgrade_level, config, grind_ranges, gem_ranges);
+    // Diagnostic : la rune telle quelle d'abord, même quand le meulage complet
+    // la remplace par sa version meulée dans la recherche.
+    if (variants.empty() || variants.front().cost != 0 || variants.front().gem_cost != 0)
+        result.push_back({rune, 0, 0});
+    for (auto& candidate : variants)
         result.push_back({std::move(candidate.rune), candidate.cost,
                           candidate.gem_cost});
     return result;
@@ -1682,6 +1753,12 @@ SolverReport solve_runes(const AccountMonster& target,
                          if (scenarios.empty())
                              warn(warnings,
                                   "Solver: no set scenarios configured; no search launched");
+    // Noms de sets (rune_sets.json), seulement si un scénario n'a pas de nom.
+    std::unordered_map<int, std::string> set_names;
+    if (std::any_of(scenarios.begin(), scenarios.end(), [](const SetScenario& scenario) {
+            return scenario.name.find_first_not_of(" \t") == std::string::npos;
+        }))
+        set_names = RuneMapping::load(mapping_directory).set_names;
     const auto projected_pool = project_pool(
         pool, config.pool.projection_level, mapping_directory, warnings);
     const CraftRanges grind_ranges =
@@ -1715,7 +1792,8 @@ SolverReport solve_runes(const AccountMonster& target,
                                         std::max<std::int64_t>(
                                             0, config.limits.time_budget_ms)),
                           warnings, started + std::chrono::seconds(1), false};
-        state.report.name = scenario.name.empty() ? "scenario" : scenario.name;
+        // Sans nom saisi : nom généré depuis les sets ("Fatal 4 + Blade 2").
+        state.report.name = scenario_display_name(scenario, set_names);
         state.all_mode = all_builds_mode(config);
         state.report.all_builds_mode = state.all_mode;
         state.control = &control;
@@ -1794,6 +1872,13 @@ SolverReport solve_runes(const AccountMonster& target,
             diagnostic.after_pruning = candidates.size();
             state.report.candidates_after += diagnostic.after_pruning;
             state.candidates.push_back(std::move(candidates));
+        }
+        // Plusieurs variantes d'une même rune (gemmes, plafond de meules) : la
+        // même combinaison peut être atteinte plusieurs fois -> dédoublonnage.
+        for (const auto& level : state.candidates) {
+            std::set<std::uint64_t> seen;
+            for (const auto& candidate : level)
+                state.dedupe |= !seen.insert(candidate.rune.rune_id).second;
         }
         // Slot figé dont la rune verrouillée ne convient pas au scénario : écarté.
         for (std::size_t slot = 0; slot < state.candidates.size(); ++slot)

@@ -9,6 +9,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace swcore {
@@ -52,6 +53,14 @@ struct SetScenario {
 
     friend bool operator==(const SetScenario&, const SetScenario&) = default;
 };
+
+// Nom d'un scénario généré depuis ses sets : "Fatal 4 + Blade 2" (ordre de la
+// config) ; "Tous sets" pour any_set. Sert quand aucun nom n'a été saisi.
+std::string scenario_label(const SetScenario& scenario,
+                           const std::unordered_map<int, std::string>& set_names);
+// Nom affiché : le nom saisi s'il existe, sinon le nom généré.
+std::string scenario_display_name(const SetScenario& scenario,
+                                  const std::unordered_map<int, std::string>& set_names);
 
 struct MainStatSelection {
     bool all = false;

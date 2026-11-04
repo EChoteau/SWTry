@@ -185,13 +185,27 @@ void App::render() {
     ImGui::SameLine();
     ImGui::BeginChild("##page", ImVec2(0, -status_height), ImGuiChildFlags_Borders);
     poll_search();  // la recherche avance quelle que soit la page affichée
-    switch (page_) {
-    case Page::Data: render_data_page(); break;
-    case Page::Monsters: render_workspace(); break;
-    case Page::Optimizer: render_workspace(); break;
-    case Page::SavedBuilds: render_saved_builds_page(); break;
-    case Page::EquipLocks: render_equip_locks_page(); break;
+    // Barre du haut : uniquement les onglets fermables ouverts (masquée sinon).
+    render_tab_strip();
+    ImGui::BeginChild("##view", ImVec2(0, 0));
+    if (WorkspaceTab* tab = active_tab()) {
+        if (tab->kind == WorkspaceTab::Kind::Monster) render_monster_tab(*tab);
+        else render_build_tab(*tab);
+    } else {
+        const bool needs_export = page() == Page::Monsters || page() == Page::Optimizer;
+        if (needs_export && !data_.export_file.loaded) {
+            ImGui::TextColored(kMutedColor, "Chargez un export dans la page Données.");
+        } else {
+            switch (page()) {
+            case Page::Data: render_data_page(); break;
+            case Page::Monsters: render_monsters_list(); break;
+            case Page::Optimizer: render_search_tab(); break;
+            case Page::SavedBuilds: render_saved_builds_page(); break;
+            case Page::EquipLocks: render_equip_locks_page(); break;
+            }
+        }
     }
+    ImGui::EndChild();
     ImGui::EndChild();
     render_status_bar();
     ImGui::End();
@@ -206,14 +220,12 @@ void App::render_menu() {
         {Page::SavedBuilds, "Builds sauvegardés"},
         {Page::EquipLocks, "Équipement et verrous"}};
     ImGui::Spacing();
-    for (const auto& [page, label] : entries)
-        if (ImGui::Selectable(label, page_ == page, 0, ImVec2(0, height))) {
-            page_ = page;
-            // Monstres et Optimiseur partagent la barre d'onglets : on active
-            // l'onglet fixe correspondant.
-            if (page == Page::Monsters) select_fixed_ = FixedTab::Monsters;
-            if (page == Page::Optimizer) select_fixed_ = FixedTab::Search;
-        }
+    // Seule navigation entre pages ; mise en évidence seulement si la page est
+    // affichée (pas quand un onglet est actif). Les onglets restent ouverts.
+    for (const auto& [entry, label] : entries)
+        if (ImGui::Selectable(label, view_.page_active(static_cast<int>(entry)), 0,
+                              ImVec2(0, height)))
+            show_page(entry);
 }
 
 void App::render_status_bar() {

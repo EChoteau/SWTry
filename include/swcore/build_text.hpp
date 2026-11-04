@@ -11,6 +11,7 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Rendu texte partagé par swcli et swgui ("Copier en texte" = sortie CLI).
@@ -61,5 +62,9 @@ void print_craft_blocks(std::ostream& out, const swcore::BuildReport& report,
 // Export CSV de swcli --export (séparateur ';').
 bool export_builds_csv(const std::filesystem::path& path,
                        const swcore::SolverReport& solver);
+// Même format, dans l'ordre donné (scénario, index dans builds ou all_builds) ;
+// le rang est la position dans cet ordre (tri du tableau de résultats du GUI).
+bool export_builds_csv(const std::filesystem::path& path, const swcore::SolverReport& solver,
+                       const std::vector<std::pair<std::size_t, std::size_t>>& order);
 
 }  // namespace swcore::text

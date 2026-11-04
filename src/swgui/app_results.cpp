@@ -1,5 +1,7 @@
-// Résultats de la recherche : lignes compactes, tri multi-colonnes (hors du
-// thread UI pour les gros tableaux), export CSV identique à swcli --export.
+// Panneau de résultats de l'Optimiseur : lignes compactes, tri de TOUS les
+// builds (hors du thread UI au-delà de 50 000 lignes), filtre de scénario,
+// pagination (seule la page affichée est dessinée), export CSV dans l'ordre
+// du tri en cours (même format que swcli --export).
 
 #include "app.hpp"
 #include "gui_common.hpp"
@@ -26,51 +28,8 @@ namespace swgui {
 
 namespace {
 
-enum ResultColumn {
-    kIds, kSets, kHp, kAttack, kDefense, kSpeed, kCritRate, kCritDamage, kResistance,
-    kAccuracy, kEffectiveHp, kEffectiveHpBroken, kDamage, kEfficiency, kScore, kCraft,
-    kResultColumns
-};
-
 constexpr std::size_t kBackgroundSortRows = 50'000;
-
-using SortKeys = std::vector<std::pair<int, bool>>;  // colonne, croissant
-
-int compare(const ResultRow& a, const ResultRow& b, int column,
-            const std::vector<std::string>& labels) {
-    const auto cmp = [](const auto& x, const auto& y) { return x < y ? -1 : y < x ? 1 : 0; };
-    switch (column) {
-    case kIds: return cmp(a.rune_ids, b.rune_ids);
-    case kSets: return cmp(labels[a.sets_label], labels[b.sets_label]);
-    case kEffectiveHp: return cmp(a.effective_hp, b.effective_hp);
-    case kEffectiveHpBroken: return cmp(a.effective_hp_broken_def, b.effective_hp_broken_def);
-    case kDamage: return cmp(a.expected_damage, b.expected_damage);
-    case kEfficiency: return cmp(a.efficiency, b.efficiency);
-    case kScore: return cmp(a.score, b.score);
-    case kCraft: return cmp(a.grinds + a.gems, b.grinds + b.gems);
-    default:
-        if (column >= kHp && column <= kAccuracy)
-            return cmp(stat_at(a.total, column - kHp), stat_at(b.total, column - kHp));
-        return 0;
-    }
-}
-
-// Ordre trié ; à clés égales, l'ordre du solveur (tie-break déterministe).
-std::vector<std::uint32_t> sorted_order(const std::vector<ResultRow>& rows,
-                                        const SortKeys& keys,
-                                        const std::vector<std::string>& labels) {
-    std::vector<std::uint32_t> order(rows.size());
-    std::iota(order.begin(), order.end(), std::uint32_t{0});
-    if (keys.empty()) return order;
-    std::stable_sort(order.begin(), order.end(), [&](std::uint32_t l, std::uint32_t r) {
-        for (const auto& [column, ascending] : keys) {
-            const int result = compare(rows[l], rows[r], column, labels);
-            if (result != 0) return ascending ? result < 0 : result > 0;
-        }
-        return false;
-    });
-    return order;
-}
+constexpr std::size_t kPageSizes[] = {10, 25, 50, 100};
 
 std::string ids_text(const std::array<std::uint64_t, 6>& ids) {
     std::string text;
@@ -107,7 +66,13 @@ void App::build_result_rows() {
     rows_.clear();
     set_labels_.clear();
     selected_row_ = static_cast<std::size_t>(-1);
-    if (!report_) return;
+    scenario_filter_ = -1;
+    pager_.reset();
+    if (!report_) {
+        row_order_.clear();
+        view_order_.clear();
+        return;
+    }
     std::map<std::string, std::uint16_t> label_index;
     const auto intern = [&](const std::string& label) {
         const auto [it, inserted] =
@@ -161,8 +126,11 @@ void App::build_result_rows() {
             rows_.push_back(row);
         }
     }
+    // Ordre du solveur, puis le tri en cours du tableau.
     row_order_.resize(rows_.size());
     std::iota(row_order_.begin(), row_order_.end(), std::uint32_t{0});
+    refresh_result_view();
+    apply_result_sort();
 }
 
 void App::stop_sort() {
@@ -175,27 +143,39 @@ void App::stop_sort() {
     sorted_order_.reset();
 }
 
-void App::request_result_sort(const ImGuiTableSortSpecs* specs) {
-    SortKeys keys;
-    for (int i = 0; specs && i < specs->SpecsCount; ++i)
-        keys.emplace_back(static_cast<int>(specs->Specs[i].ColumnUserID),
-                          specs->Specs[i].SortDirection == ImGuiSortDirection_Ascending);
+void App::refresh_result_view() {
+    view_order_ = filter_scenario(row_order_, rows_, scenario_filter_);
+    pager_.clamp(view_order_.size());
+}
+
+void App::apply_result_sort() {
     if (rows_.size() < kBackgroundSortRows) {
-        row_order_ = sorted_order(rows_, keys, set_labels_);
+        row_order_ = sorted_result_order(rows_, sort_keys_, set_labels_);
+        refresh_result_view();
         return;
     }
     // Gros tableau : tri hors du thread UI (rows_ n'est pas modifié pendant le
     // tri : toute nouvelle recherche appelle d'abord stop_sort()).
     stop_sort();
     sorting_.store(true);
-    sort_thread_ = std::jthread([this, keys](std::stop_token) {
-        auto order = sorted_order(rows_, keys, set_labels_);
+    sort_thread_ = std::jthread([this, keys = sort_keys_](std::stop_token) {
+        auto order = sorted_result_order(rows_, keys, set_labels_);
         {
             std::lock_guard lock(sort_mutex_);
             sorted_order_ = std::move(order);
         }
         sorting_.store(false);
     });
+}
+
+void App::request_result_sort(const ImGuiTableSortSpecs* specs) {
+    SortKeys keys;
+    for (int i = 0; specs && i < specs->SpecsCount; ++i)
+        keys.emplace_back(static_cast<int>(specs->Specs[i].ColumnUserID),
+                          specs->Specs[i].SortDirection == ImGuiSortDirection_Ascending);
+    sort_keys_ = std::move(keys);
+    pager_.reset();  // un tri ramène à la page 1
+    apply_result_sort();
 }
 
 void App::export_results_csv() {
@@ -205,10 +185,93 @@ void App::export_results_csv() {
                                        {"CSV", "*.csv"})
                             .result();
     if (target.empty()) return;
-    if (swcore::text::export_builds_csv(from_utf8(target), *report_))
+    // Tous les builds (tous scénarios), dans l'ordre du tri en cours.
+    std::vector<std::pair<std::size_t, std::size_t>> order;
+    order.reserve(row_order_.size());
+    for (const auto index : row_order_)
+        order.emplace_back(rows_[index].scenario, rows_[index].index);
+    if (swcore::text::export_builds_csv(from_utf8(target), *report_, order))
         set_status("Builds exportés : " + target);
     else
         set_status("Impossible d'écrire " + target);
+}
+
+void App::render_pagination() {
+    const std::size_t rows = view_order_.size();
+    const std::size_t count = Pager::page_count(rows, pager_.page_size);
+    pager_.clamp(rows);
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Lignes par page");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4.5f);
+    const std::string size_label = std::to_string(pager_.page_size);
+    if (ImGui::BeginCombo("##page_size", size_label.c_str())) {
+        for (const auto size : kPageSizes)
+            if (ImGui::Selectable(std::to_string(size).c_str(), pager_.page_size == size))
+                pager_.set_page_size(size);
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+
+    const auto go = [&](std::size_t page) {
+        pager_.page = page;
+        pager_.clamp(rows);
+    };
+    ImGui::BeginDisabled(pager_.page <= 1);
+    if (ImGui::Button("<<")) go(1);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Première page");
+    ImGui::SameLine();
+    if (ImGui::Button("<")) go(pager_.page - 1);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Page précédente");
+    ImGui::EndDisabled();
+    for (const auto page : page_buttons(pager_.page, count)) {
+        ImGui::SameLine();
+        if (page == 0) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("…");
+            continue;
+        }
+        const bool current = page == pager_.page;
+        if (current)
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushID(static_cast<int>(page));
+        if (ImGui::Button(std::to_string(page).c_str())) go(page);
+        ImGui::PopID();
+        if (current) ImGui::PopStyleColor();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(pager_.page >= count);
+    if (ImGui::Button(">")) go(pager_.page + 1);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Page suivante");
+    ImGui::SameLine();
+    if (ImGui::Button(">>")) go(count);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Dernière page");
+    ImGui::EndDisabled();
+    ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Page %s / %s", group_digits(static_cast<long long>(pager_.page)).c_str(),
+                group_digits(static_cast<long long>(count)).c_str());
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
+    // Saisie directe : suit la page courante tant qu'on ne tape pas.
+    static int typed_page = 1;
+    static std::size_t shown_page = 0;
+    if (shown_page != pager_.page) {
+        shown_page = pager_.page;
+        typed_page = static_cast<int>(pager_.page);
+    }
+    ImGui::InputInt("##goto", &typed_page, 0, 0);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {  // Entrée ou sortie du champ
+        go(static_cast<std::size_t>(std::max(1, typed_page)));
+        typed_page = static_cast<int>(pager_.page);  // numéro hors limites : ramené
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Aller à la page (Entrée)");
 }
 
 void App::render_results() {
@@ -217,111 +280,157 @@ void App::render_results() {
         if (sorted_order_) {
             row_order_ = std::move(*sorted_order_);
             sorted_order_.reset();
+            refresh_result_view();
         }
     }
     if (!report_) {
-        ImGui::TextColored(color::muted, "Aucun résultat pour l'instant.");
+        ImGui::TextColored(color::muted, "Aucun résultat. Lance une recherche.");
         return;
     }
 
-    // Résumé par scénario, badge "incomplet" si arrêtée ou annulée.
+    // En-tête : nombre de builds, badges, filtre de scénario, export.
+    bool incomplete = report_cancelled_;
+    bool truncated = false;
     for (const auto& scenario : report_->scenarios) {
-        const std::size_t count = scenario.all_builds_mode
-                                      ? static_cast<std::size_t>(scenario.valid_builds)
-                                      : scenario.builds.size();
-        ImGui::Text("%s : %s build(s)", scenario.name.c_str(),
-                    group_digits(static_cast<long long>(count)).c_str());
-        if (scenario.incomplete || report_cancelled_) {
-            ImGui::SameLine();
-            ImGui::TextColored(color::warning, "[incomplet]");
-        }
-        if (scenario.truncated) {
-            ImGui::SameLine();
-            ImGui::TextColored(color::warning, "[tronqué au plafond]");
-        }
-        if (!scenario.validation_error.empty()) {
-            ImGui::SameLine();
-            ImGui::TextColored(color::error, "Erreur : %s", scenario.validation_error.c_str());
+        incomplete = incomplete || scenario.incomplete;
+        truncated = truncated || scenario.truncated;
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("%s builds valides", group_digits(static_cast<long long>(view_order_.size())).c_str());
+    if (incomplete) {
+        ImGui::SameLine();
+        ImGui::TextColored(color::warning, "[recherche incomplète]");
+    }
+    if (truncated) {
+        ImGui::SameLine();
+        ImGui::TextColored(color::warning, "[plafond atteint]");
+    }
+    const bool several = report_->scenarios.size() > 1;
+    if (several) {
+        ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+        const std::string preview =
+            scenario_filter_ < 0 ? std::string{"Tous les scénarios"}
+                                 : report_->scenarios[static_cast<std::size_t>(scenario_filter_)].name;
+        if (ImGui::BeginCombo("##scenario_filter", preview.c_str())) {
+            if (ImGui::Selectable("Tous les scénarios", scenario_filter_ < 0)) {
+                scenario_filter_ = -1;
+                pager_.reset();
+                refresh_result_view();
+            }
+            for (std::size_t s = 0; s < report_->scenarios.size(); ++s) {
+                ImGui::PushID(static_cast<int>(s));
+                if (ImGui::Selectable(report_->scenarios[s].name.c_str(),
+                                      scenario_filter_ == static_cast<int>(s))) {
+                    scenario_filter_ = static_cast<int>(s);
+                    pager_.reset();
+                    refresh_result_view();
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
         }
     }
-    if (ImGui::Button("Exporter CSV...")) export_results_csv();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(selected_row_ >= rows_.size());
-    if (ImGui::Button("Copier les ids de runes"))
-        ImGui::SetClipboardText(ids_text(rows_[selected_row_].rune_ids).c_str());
-    ImGui::EndDisabled();
     if (sorting_.load()) {
         ImGui::SameLine();
         ImGui::TextColored(color::accent, "Tri en cours...");
     }
+    ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+    if (ImGui::Button("Exporter CSV...")) export_results_csv();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Tous les builds, dans l'ordre du tri en cours, ids de runes inclus.");
+    for (const auto& scenario : report_->scenarios)
+        if (!scenario.validation_error.empty())
+            ImGui::TextColored(color::error, "%s : %s", scenario.name.c_str(),
+                               scenario.validation_error.c_str());
 
+    // Tableau : seule la page affichée est dessinée.
     const ImGuiTableFlags flags =
-        ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti | ImGuiTableFlags_SortTristate |
-        ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti | ImGuiTableFlags_Resizable |
+        ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##results", kResultColumns, flags)) return;
-    ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("Ids des runes", 0, 0.0f, kIds);
-    ImGui::TableSetupColumn("Sets", 0, 0.0f, kSets);
-    const char* short_labels[] = {"PV", "ATQ", "DEF", "VIT", "TC", "DC", "RES", "PRÉC"};
-    for (int i = 0; i < 8; ++i)
-        ImGui::TableSetupColumn(short_labels[i], ImGuiTableColumnFlags_PreferSortDescending,
-                                0.0f, static_cast<ImGuiID>(kHp + i));
-    ImGui::TableSetupColumn("PV eff.", ImGuiTableColumnFlags_PreferSortDescending, 0.0f,
-                            kEffectiveHp);
-    ImGui::TableSetupColumn("PV eff. DEF brisée", ImGuiTableColumnFlags_PreferSortDescending,
-                            0.0f, kEffectiveHpBroken);
-    ImGui::TableSetupColumn("DMG", ImGuiTableColumnFlags_PreferSortDescending, 0.0f, kDamage);
-    ImGui::TableSetupColumn("Efficacité", ImGuiTableColumnFlags_PreferSortDescending, 0.0f,
-                            kEfficiency);
-    ImGui::TableSetupColumn("Score", ImGuiTableColumnFlags_PreferSortDescending, 0.0f, kScore);
-    ImGui::TableSetupColumn("Meules / gemmes", 0, 0.0f, kCraft);
-    ImGui::TableHeadersRow();
-    if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs(); specs && specs->SpecsDirty) {
-        request_result_sort(specs);
-        specs->SpecsDirty = false;
-    }
+    const ImVec2 outer(0, -ImGui::GetFrameHeightWithSpacing());
+    if (ImGui::BeginTable("##results", kResultColumnCount, flags, outer)) {
+        const auto descending = ImGuiTableColumnFlags_PreferSortDescending;
+        ImGui::TableSetupScrollFreeze(1, 1);
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoHide,
+                                0.0f, kColRank);
+        ImGui::TableSetupColumn("Scénario", several ? 0 : ImGuiTableColumnFlags_Disabled, 0.0f,
+                                kColScenario);
+        ImGui::TableSetupColumn("Sets", 0, 0.0f, kColSets);
+        ImGui::TableSetupColumn("Score", ImGuiTableColumnFlags_DefaultSort | descending, 0.0f,
+                                kColScore);
+        const char* stat_labels[] = {"PV",       "ATQ", "DEF", "VIT", "Tx crit.",
+                                     "Dgts crit.", "RES", "Préc."};
+        for (int i = 0; i < 8; ++i)
+            ImGui::TableSetupColumn(stat_labels[i], descending, 0.0f,
+                                    static_cast<ImGuiID>(kColHp + i));
+        ImGui::TableSetupColumn("PV eff.", descending, 0.0f, kColEffectiveHp);
+        ImGui::TableSetupColumn("PV eff. DEF brisée", descending, 0.0f, kColEffectiveHpBroken);
+        ImGui::TableSetupColumn("DMG", descending, 0.0f, kColDamage);
+        ImGui::TableSetupColumn("Efficacité", descending, 0.0f, kColEfficiency);
+        ImGui::TableSetupColumn("Craft", 0, 0.0f, kColCraft);
+        ImGui::TableSetupColumn("Ids de runes", ImGuiTableColumnFlags_DefaultHide, 0.0f,
+                                kColIds);
+        ImGui::TableHeadersRow();
+        if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs(); specs && specs->SpecsDirty) {
+            request_result_sort(specs);
+            specs->SpecsDirty = false;
+        }
 
-    ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(row_order_.size()));
-    while (clipper.Step()) {
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-            const std::uint32_t index = row_order_[static_cast<std::size_t>(i)];
+        std::optional<std::uint32_t> open;
+        const auto [first, last] = pager_.range(view_order_.size());
+        for (std::size_t i = first; i < last; ++i) {
+            const std::uint32_t index = view_order_[i];
             const auto& row = rows_[index];
             ImGui::PushID(static_cast<int>(index));
             ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(kIds);
-            const std::string ids = ids_text(row.rune_ids);
-            if (ImGui::Selectable(ids.c_str(), selected_row_ == index,
+            ImGui::TableSetColumnIndex(kColRank);
+            const std::string rank = std::to_string(i + 1);
+            if (ImGui::Selectable(rank.c_str(), selected_row_ == index,
                                   ImGuiSelectableFlags_SpanAllColumns |
-                                      ImGuiSelectableFlags_AllowOverlap)) {
-                selected_row_ = index;
-                open_result(index);
+                                      ImGuiSelectableFlags_AllowOverlap))
+                open = index;
+            if (ImGui::BeginPopupContextItem("##row_menu")) {
+                if (ImGui::MenuItem("Ouvrir")) open = index;
+                ImGui::EndPopup();
             }
-            ImGui::TableSetColumnIndex(kSets);
+            if (ImGui::TableSetColumnIndex(kColScenario))
+                ImGui::TextUnformatted(report_->scenarios[row.scenario].name.c_str());
+            ImGui::TableSetColumnIndex(kColSets);
             ImGui::TextUnformatted(set_labels_[row.sets_label].c_str());
+            ImGui::TableSetColumnIndex(kColScore);
+            ImGui::TextUnformatted(swcore::text::format_score(row.score).c_str());
             for (int s = 0; s < 8; ++s) {
-                ImGui::TableSetColumnIndex(kHp + s);
+                ImGui::TableSetColumnIndex(kColHp + s);
                 ImGui::TextUnformatted(group_digits(stat_at(row.total, s)).c_str());
             }
-            ImGui::TableSetColumnIndex(kEffectiveHp);
+            ImGui::TableSetColumnIndex(kColEffectiveHp);
             ImGui::TextUnformatted(group_digits(row.effective_hp).c_str());
-            ImGui::TableSetColumnIndex(kEffectiveHpBroken);
+            ImGui::TableSetColumnIndex(kColEffectiveHpBroken);
             ImGui::TextUnformatted(group_digits(row.effective_hp_broken_def).c_str());
-            ImGui::TableSetColumnIndex(kDamage);
+            ImGui::TableSetColumnIndex(kColDamage);
             ImGui::TextUnformatted(group_digits(row.expected_damage).c_str());
-            ImGui::TableSetColumnIndex(kEfficiency);
+            ImGui::TableSetColumnIndex(kColEfficiency);
             ImGui::Text("%.2f %%", row.efficiency);
-            ImGui::TableSetColumnIndex(kScore);
-            ImGui::TextUnformatted(swcore::text::format_score(row.score).c_str());
-            ImGui::TableSetColumnIndex(kCraft);
-            if (row.grinds + row.gems > 0) ImGui::Text("%d / %d", row.grinds, row.gems);
-            else ImGui::TextColored(color::muted, "-");
+            ImGui::TableSetColumnIndex(kColCraft);
+            if (row.grinds + row.gems > 0)
+                ImGui::Text("%d meule(s), %d gemme(s)", row.grinds, row.gems);
+            else
+                ImGui::TextColored(color::muted, "-");
+            if (ImGui::TableSetColumnIndex(kColIds))
+                ImGui::TextUnformatted(ids_text(row.rune_ids).c_str());
             ImGui::PopID();
         }
+        ImGui::EndTable();
+        if (open) {
+            // Ouvre le build dans un onglet et l'enregistre ; la ligne reste surlignée.
+            selected_row_ = *open;
+            open_result(*open);
+        }
     }
-    ImGui::EndTable();
+    render_pagination();
 }
 
 }  // namespace swgui

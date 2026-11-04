@@ -1,5 +1,7 @@
 // Actions de verrouillage du GUI : toute la logique est dans swcore/locks ;
-// ici, seulement le choix du nom affiché et l'écriture de locks.json.
+// ici, seulement le choix du nom affiché et l'écriture de locks.json. On
+// verrouille un monstre ou un build entier, jamais une rune isolée à la main
+// (l'API par objet de swcore reste pour la page "Équipement et verrous").
 
 #include "app.hpp"
 
@@ -18,19 +20,6 @@ void App::locks_changed() {
     monster_sort_dirty_ = true;  // la colonne "Verrou" peut être triée
 }
 
-void App::toggle_rune_lock(const swcore::Rune& rune) {
-    if (!data_.locks.remove(swcore::LockKind::Rune, rune.rune_id))
-        swcore::lock_rune_for_owner(data_.locks, rune, owner_name(swcore::rune_owner(rune)));
-    locks_changed();
-}
-
-void App::toggle_artifact_lock(const swcore::Artifact& artifact) {
-    if (!data_.locks.remove(swcore::LockKind::Artifact, artifact.rid))
-        swcore::lock_artifact_for_owner(data_.locks, artifact,
-                                        owner_name(artifact.occupied_id));
-    locks_changed();
-}
-
 void App::set_monster_locks(const swcore::AccountMonster& monster, bool lock, bool runes,
                             bool artifacts) {
     if (lock)
@@ -38,17 +27,6 @@ void App::set_monster_locks(const swcore::AccountMonster& monster, bool lock, bo
                              artifacts);
     else
         swcore::unlock_monster(data_.locks, monster, runes, artifacts);
-    locks_changed();
-}
-
-}  // namespace swgui
-
-namespace swgui {
-
-void App::toggle_rune_lock_for(const swcore::Rune& rune, std::uint64_t unit_id) {
-    if (!data_.locks.remove(swcore::LockKind::Rune, rune.rune_id))
-        data_.locks.set({swcore::LockKind::Rune, rune.rune_id, unit_id, owner_name(unit_id),
-                         rune.set_id, rune.slot});
     locks_changed();
 }
 

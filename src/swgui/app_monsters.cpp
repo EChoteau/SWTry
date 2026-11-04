@@ -377,8 +377,7 @@ void App::render_monsters_list() {
                 ImGui::TableSetColumnIndex(kAction);
                 if (ImGui::SmallButton("Optimiser")) {
                     config_.pool.target_unit_id = row.unit_id;
-                    page_ = Page::Optimizer;
-                    select_fixed_ = FixedTab::Search;
+                    show_page(Page::Optimizer);
                     set_status("Monstre sélectionné pour l'optimisation : " + row.name);
                 }
             }

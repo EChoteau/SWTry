@@ -5,6 +5,22 @@
 #include <string>
 #include <vector>
 
+TEST_CASE("Scenario name is generated from its sets unless one was typed") {
+    const std::unordered_map<int, std::string> names{{8, "Fatal"}, {4, "Blade"}};
+    swcore::SetScenario scenario{"", {{8, 4}, {4, 2}}, false};
+    CHECK(swcore::scenario_label(scenario, names) == "Fatal 4 + Blade 2");
+    CHECK(swcore::scenario_display_name(scenario, names) == "Fatal 4 + Blade 2");
+    scenario.name = "  ";  // espaces seuls : pas un nom saisi
+    CHECK(swcore::scenario_display_name(scenario, names) == "Fatal 4 + Blade 2");
+    scenario.name = "Mon build";
+    CHECK(swcore::scenario_display_name(scenario, names) == "Mon build");
+    const swcore::SetScenario any{"", {}, true};
+    CHECK(swcore::scenario_display_name(any, names) == "Tous sets");
+    // Set inconnu du mapping : identifiant, jamais un nom inventé.
+    const swcore::SetScenario unknown{"", {{99, 6}}, false};
+    CHECK(swcore::scenario_label(unknown, names) == "Set 99 6");
+}
+
 TEST_CASE("Solver configuration loads pool scenarios and validated options") {
     std::vector<std::string> warnings;
     const auto config = swcore::SolverConfig::load(
