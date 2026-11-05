@@ -27,8 +27,8 @@ void require_ids(const json& table, const std::set<int>& ids) {
 TEST_CASE("SW Exporter mapping resolves all mapping-relevant fixture IDs") {
     const std::string root = SW_PROJECT_SOURCE_DIR;
     const auto export_data = load_json(
-        root + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json");
-    const auto mapping = root + "/data/mapping/";
+        root + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json");
+    const auto mapping = root + "/data/game/";
 
     std::set<int> rune_sets;
     std::set<int> rune_stats;
@@ -55,14 +55,14 @@ TEST_CASE("SW Exporter mapping resolves all mapping-relevant fixture IDs") {
         }
     }
 
-    require_ids(load_json(mapping + "rune_sets.json"), rune_sets);
-    require_ids(load_json(mapping + "rune_effectTypes.json"), rune_stats);
-    require_ids(load_json(mapping + "artifact_types.json"), artifact_types);
-    require_ids(load_json(mapping + "artifact_rank.json"), artifact_ranks);
-    require_ids(load_json(mapping + "artifact_effectTypes_main.json"),
+    require_ids(load_json(mapping + "runes/rune_sets.json"), rune_sets);
+    require_ids(load_json(mapping + "runes/rune_effectTypes.json"), rune_stats);
+    require_ids(load_json(mapping + "artifacts/artifact_types.json"), artifact_types);
+    require_ids(load_json(mapping + "artifacts/artifact_rank.json"), artifact_ranks);
+    require_ids(load_json(mapping + "artifacts/artifact_effectTypes_main.json"),
                 artifact_main_effects);
-    require_ids(load_json(mapping + "artifact_effectTypes_sub.json"),
+    require_ids(load_json(mapping + "artifacts/artifact_effectTypes_sub.json"),
                 artifact_effects);
-    require_ids(load_json(mapping + "monster_attributes.json"),
+    require_ids(load_json(mapping + "monsters/monster_attributes.json"),
                 monster_attributes);
 }

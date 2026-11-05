@@ -1,15 +1,15 @@
 #pragma once
 
-#include "data_store.hpp"
-#include "gui_logic.hpp"
-#include "settings.hpp"
+#include "store/data_store.hpp"
+#include "logic/gui_logic.hpp"
+#include "store/settings.hpp"
 
-#include "swcore/craft_audit.hpp"
-#include "swcore/solve_async.hpp"
-#include "swcore/solver.hpp"
-#include "swcore/solver_config.hpp"
-#include "swcore/team_analysis.hpp"
-#include "swcore/team_optimizer.hpp"
+#include "swcore/runes/craft_audit.hpp"
+#include "swcore/solver/solve_async.hpp"
+#include "swcore/solver/solver.hpp"
+#include "swcore/solver/solver_config.hpp"
+#include "swcore/dungeon/team_analysis.hpp"
+#include "swcore/dungeon/team_optimizer.hpp"
 
 #include <array>
 #include <atomic>
@@ -316,20 +316,27 @@ private:
         std::jthread thread;  // en dernier : arrêté et joint avant le reste
     };
     std::unique_ptr<TeamOptimization> team_opt_;
-    bool team_show_optimized_ = false;
     int team_opt_revision_ = 0;  // incrémenté à chaque optimisation (cache de l'analyse)
     void start_team_optimization(const DataStore::DungeonState& state,
                                  const swcore::TeamConfig& team);
     void render_team_optimization(const DataStore::DungeonState& state,
                                   const swcore::TeamConfig& team);
+    // Résultat d'optimisation de la team et de l'étage affichés (sinon nullptr).
+    const swcore::TeamOptimizerResult* team_result(const swcore::TeamConfig& team) const;
 
-    // VIT de combat saisies à la main ("team/monstre" -> VIT), non enregistrées.
-    std::map<std::string, int> dungeon_manual_speeds_;
-    // Analyse de la team affichée, recalculée quand ses entrées changent.
+    // Analyse principale (builds optimisés, ou plan seul avant optimisation) et
+    // comparaison facultative avec les runes actuelles ; recalculées quand
+    // leurs entrées changent.
     std::optional<swcore::TeamAnalysis> team_analysis_;
     std::string team_analysis_key_;
+    bool team_compare_current_ = false;
+    std::optional<swcore::TeamAnalysis> team_compare_;
+    std::string team_compare_key_;
     void render_team_analysis(const DataStore::DungeonState& state,
                               const swcore::TeamConfig& team);
+    void render_turn_order(const swcore::TeamConfig& team, const swcore::TeamAnalysis& analysis,
+                           const swcore::AtbResult& atb,
+                           const std::vector<swcore::ActionDamage>* actions);
 
     std::optional<Toast> toast_;
     // Page Équipement et verrous.

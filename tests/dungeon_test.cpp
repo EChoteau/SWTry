@@ -3,10 +3,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/account.hpp"
-#include "swcore/dungeon.hpp"
-#include "swcore/runes.hpp"
-#include "swcore/team_config.hpp"
+#include "swcore/account/account.hpp"
+#include "swcore/dungeon/dungeon.hpp"
+#include "swcore/runes/runes.hpp"
+#include "swcore/dungeon/team_config.hpp"
+#include "swcore/dungeon/team_analysis.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +22,7 @@ struct Loaded {
     swcore::ReferenceDB reference =
         swcore::ReferenceDB::load(kRoot + "/data/swarfarm/monsters.json");
     swcore::DungeonData data = swcore::DungeonData::load(
-        kRoot + "/data/swarfarm", kRoot + "/data/overrides/skills_overrides.json", reference,
+        kRoot + "/data/swarfarm", kRoot + "/data/game/monsters/skills_overrides.json", reference,
         [this](const std::string& message) { warnings.push_back(message); });
 };
 
@@ -128,7 +129,7 @@ TEST_CASE("Team config GB12 loads, validates and checks the box") {
     CHECK(team.rune_presets.at("set1").at("Konamiya").size() == 3);
     CHECK(team.rune_presets.at("set2").empty());
 
-    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/mapping");
+    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/game");
     swcore::validate_team_config(team, loaded().reference, mapping.set_names);
     for (const auto& problem : team.problems) INFO(problem);
     CHECK(team.problems.empty());
@@ -154,27 +155,76 @@ TEST_CASE("Team config GB12 loads, validates and checks the box") {
 }
 
 TEST_CASE("Mechanics: values by dotted key, null means unverified") {
-    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/mechanics.json");
+    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/game/combat/mechanics.json");
     REQUIRE(mechanics.loaded());
     CHECK(mechanics.number("tick_atb_percent") == 7.0);
     CHECK(mechanics.number("def_formula.c") == 3.5);
     CHECK(mechanics.text("tie_break") == "config_order");
-    CHECK(mechanics.flag("per_monster.Teshar.tempest_every_attack") == false);
-    CHECK(mechanics.number("per_monster.Teshar.tempest_cooldown") == 3);
+    CHECK(mechanics.flag("fend_off_counts_passive_extra_attack") == true);
+    CHECK(mechanics.flag("boss_immune_to_stun") == true);
+    CHECK(mechanics.number("resist_floor_percent") == 15);
+    // Tempest vient maintenant des données (fusion other_skill), plus de mechanics.json.
+    CHECK_FALSE(mechanics.has("per_monster.Teshar.tempest_multiplier"));
+    CHECK_FALSE(mechanics.has("per_monster.Teshar.tempest_every_attack"));
     // Inconnu : null -> listé comme hypothèse non vérifiée, aucune valeur.
-    CHECK_FALSE(mechanics.number("per_monster.Teshar.tempest_multiplier").has_value());
-    const auto unknown = mechanics.unverified();
-    CHECK(std::find(unknown.begin(), unknown.end(), "per_monster.Teshar.tempest_multiplier") !=
-          unknown.end());
+    const auto parsed = swcore::Mechanics::parse(R"({"known": 2, "group": {"unknown": null}})");
+    REQUIRE(parsed.loaded());
+    CHECK_FALSE(parsed.number("group.unknown").has_value());
+    const auto unknown = parsed.unverified();
+    CHECK(std::find(unknown.begin(), unknown.end(), "group.unknown") != unknown.end());
     CHECK_FALSE(swcore::Mechanics::parse("pas du json").loaded());
+}
+
+TEST_CASE("Skill merge: other_skill parts complete the main skill (Tempest)") {
+    const auto& data = loaded().data;
+    // 1181 "Tempest (Passive)" (Teshar) <- 2982 : "3.7*{ATK}", AoE, used_on vide.
+    const auto* tempest = data.skill(1181);
+    REQUIRE(tempest);
+    CHECK(tempest->passive);
+    CHECK(tempest->multiplier_formula == "3.7*{ATK}");
+    CHECK_FALSE(tempest->multiplier_formula_raw.empty());
+    CHECK(tempest->aoe);
+    REQUIRE(tempest->merged_from.size() == 1);
+    CHECK(tempest->merged_from.front() == 2982);
+    // Skill-ups de la principale : +30 % de dégâts, recharge 4 - 1 = 3.
+    CHECK(swcore::skill_damage_bonus(*tempest) == 30);
+    CHECK(swcore::skill_cooldown(*tempest) == 3);
+    CHECK(std::any_of(tempest->effects.begin(), tempest->effects.end(),
+                      [](const swcore::SkillEffect& effect) { return effect.name == "Stun"; }));
+    CHECK(std::any_of(tempest->effects.begin(), tempest->effects.end(),
+                      [](const swcore::SkillEffect& effect) {
+                          return effect.name == "Reduce Cooltime" && effect.on_death;
+                      }));
+    CHECK(swcore::is_after_attack_passive(*tempest));
+    CHECK(data.skills_merged() > 1);  // générique : pas seulement Teshar
+
+    // Principale qui a déjà un multiplicateur : non touchée.
+    swcore::SkillData main;
+    main.multiplier_formula = "3.8*{ATK}";
+    swcore::SkillData part;
+    part.id = 1;
+    part.multiplier_formula = "3.0*{ATK}";
+    CHECK_FALSE(swcore::merge_other_skill(main, part));
+    CHECK(main.multiplier_formula == "3.8*{ATK}");
+
+    // Trous : compétences de monstres qui frappent, toujours sans multiplicateur.
+    const auto& gaps = data.damage_gaps();
+    CHECK_FALSE(gaps.empty());
+    CHECK(std::find(gaps.begin(), gaps.end(), 1181) == gaps.end());
+    for (const int id : gaps) {
+        const auto* skill = data.skill(id);
+        REQUIRE(skill);
+        CHECK(skill->multiplier_formula.empty());
+        CHECK_FALSE(skill->used_on.empty());
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Étape 2 : ATB, fenêtres de VIT, taux critique cible.
 // ---------------------------------------------------------------------------
 
-#include "swcore/atb.hpp"
-#include "swcore/team_analysis.hpp"
+#include "swcore/dungeon/atb.hpp"
+#include "swcore/dungeon/team_analysis.hpp"
 
 namespace {
 
@@ -230,6 +280,26 @@ TEST_CASE("ATB: GB12 reference sequence") {
     CHECK(result.bars.size() >= 17);
 }
 
+TEST_CASE("ATB: stunned enemy loses its turn, dead enemy never plays") {
+    const auto units = reference_units();
+    // Après le 1er tour de Teshar (t9) : les deux tours sont étourdies.
+    swcore::AtbOptions options;
+    options.events = {{0, 0, {6, 7}, {}}};
+    const auto stunned = swcore::simulate_atb(units, reference_script(), options);
+    REQUIRE(stunned.boss_turn.has_value());
+    bool right_lost = false;
+    for (const auto& turn : stunned.turns)
+        if (turn.actor == 7 && turn.tick == 15) right_lost = turn.stunned;
+    CHECK(right_lost);  // t15 : tour droite étourdie, tour perdu
+    CHECK(stunned.turns[*stunned.boss_turn].tick == 17);
+    CHECK_FALSE(stunned.turns[*stunned.boss_turn].stunned);
+
+    // Tour droite tuée au 1er tour de Teshar : elle ne joue plus.
+    options.events = {{0, 0, {}, {7}}};
+    const auto killed = swcore::simulate_atb(units, reference_script(), options);
+    for (const auto& turn : killed.turns) CHECK(turn.actor != 7);
+}
+
 TEST_CASE("ATB: boost is an addition, reduction floors at 0") {
     using swcore::AtbBoost;
     // A (VIT 100) joue au tic 15 (105) et donne +100 à B (VIT 50 : 52,5 -> 152,5).
@@ -248,8 +318,31 @@ TEST_CASE("ATB: boost is an addition, reduction floors at 0") {
     CHECK(units[result.turns[1].actor].name == "A");  // A rejoue avant B
 }
 
-TEST_CASE("Speed windows on the GB12 reference") {
-    const auto units = reference_units();
+TEST_CASE("Strict speed check: ties and broken order are rejected") {
+    // Référence telle quelle : Teshar et Konamiya à 167 jouent à égalité au tic
+    // 9 (ordre non garanti) -> refusé, il faut monter Teshar.
+    auto units = reference_units();
+    const auto script = reference_script();
+    auto check = swcore::check_speed_plan(units, script);
+    CHECK_FALSE(check.ok);
+    REQUIRE(check.raise.has_value());
+    CHECK(units[*check.raise].name == "Teshar");
+    // Teshar 168 : plus d'égalité, script complet avant le Géant.
+    units[0].speed = 168;
+    check = swcore::check_speed_plan(units, script);
+    CHECK(check.ok);
+    // Konamiya plus rapide que Teshar : Konamiya joue avant l'action 2 alors
+    // qu'elle a encore l'action 3 -> ordre cassé, il faut monter Teshar.
+    units[2].speed = 170;
+    check = swcore::check_speed_plan(units, script);
+    CHECK_FALSE(check.ok);
+    REQUIRE(check.raise.has_value());
+    CHECK(units[*check.raise].name == "Teshar");
+}
+
+TEST_CASE("Speed windows on the GB12 reference (strict, Teshar 168)") {
+    auto units = reference_units();
+    units[0].speed = 168;
     const auto script = reference_script();
     const auto window = [&](std::size_t unit) { return swcore::speed_window(units, script, unit); };
     const auto teshar = window(0);
@@ -261,13 +354,61 @@ TEST_CASE("Speed windows on the GB12 reference") {
         CHECK(w.found);
         CHECK(w.current_inside);
     }
-    CHECK(teshar.min == 167);    // égalité avec Konamiya : le leader joue d'abord
-    CHECK(konamiya.max == 167);  // Konamiya ne doit pas dépasser Teshar
-    CHECK(luna.min == 153);
-    CHECK(luna.max == 160);
-    CHECK(homunculus.max == 155);  // égalité avec Luna tolérée (Luna d'abord)
+    CHECK(teshar.min == 168);      // 167 : égalité avec Konamiya, refusée
+    CHECK(konamiya.max == 167);    // Teshar > Konamiya, 1 point d'écart
+    CHECK(luna.min == 154);        // 153 : égalité avec Homonculus, refusée
+    CHECK(luna.max == 160);        // 161 : Luna joue avant l'action 4 de Teshar
+    CHECK(homunculus.max == 154);  // Luna > Homonculus
     // Prilea 179 : 8 tics x 12,53 = 100,24 -> joue au tic 8, script intact.
     CHECK(prilea.min == 179);
+}
+
+TEST_CASE("Joint speed plan from minimal speeds") {
+    // Toutes les alliées à 100 : le plan monte le fautif de 1 jusqu'au succès.
+    auto units = reference_units();
+    for (std::size_t i = 0; i < 5; ++i) units[i].speed = 100;
+    const auto script = reference_script();
+    const auto plan = swcore::plan_speeds(units, script);
+    REQUIRE(plan.found);
+    for (std::size_t i = 0; i < 5; ++i) units[i].speed = plan.speeds[i];
+    CHECK(swcore::check_speed_plan(units, script).ok);
+    CHECK(plan.speeds[0] > plan.speeds[2]);  // Teshar > Konamiya
+    CHECK(plan.speeds[3] > plan.speeds[4]);  // Luna > Homonculus
+    // On ne fait que monter les VIT ; les ennemis ne bougent pas.
+    for (std::size_t i = 0; i < 5; ++i) CHECK(plan.speeds[i] >= 100);
+    for (std::size_t i = 5; i < units.size(); ++i)
+        CHECK(plan.speeds[i] == reference_units()[i].speed);
+    // Ordre du plan : Prilea, Teshar, Konamiya, Teshar, Luna, Homonculus avant le Géant.
+    const auto atb = swcore::simulate_atb(units, script);
+    std::vector<std::string> allies;
+    for (std::size_t t = 0; t < *atb.boss_turn; ++t)
+        if (units[atb.turns[t].actor].ally && atb.turns[t].step >= 0)
+            allies.push_back(units[atb.turns[t].actor].name);
+    CHECK(allies == std::vector<std::string>{"Prilea", "Teshar", "Konamiya", "Teshar", "Luna",
+                                             "Homunculus"});
+}
+
+TEST_CASE("Tower bonuses at level 20 and combat stats") {
+    const auto towers =
+        swcore::load_tower_bonuses(kRoot + "/data/game/account/summoner_skills.json", 20);
+    REQUIRE(towers.loaded);
+    CHECK(towers.speed == 15);
+    CHECK(towers.crit_damage == 25);
+    CHECK(towers.attack == 20);
+    CHECK(towers.element_attack.at(swcore::Element::Wind) == 21);
+    // Prilea sans runes : 105 + ceil(105 x 15 %) = 121 de VIT de combat.
+    const auto bonus = swcore::combat_bonus(swcore::Element::Wind, &towers, std::nullopt,
+                                            "Cairos Dungeon");
+    const swcore::StatValues white{8235, 736, 527, 105, 15, 50, 15, 0};
+    const auto combat = swcore::combat_stats(white, white, bonus);
+    CHECK(combat.speed == 121);
+    CHECK(combat.crit_damage == 75);
+    CHECK(combat.attack == 736 + static_cast<int>(std::ceil(736 * 0.41)));  // tour 20 + vent 21
+    // Leader Teshar (CR 33 %, donjon) : seulement dans les contenus de type donjon.
+    swcore::LeaderSkill teshar{138, 33, "Dungeon", "Critical Rate", std::nullopt};
+    CHECK(swcore::combat_bonus(swcore::Element::Wind, nullptr, teshar, "Cairos Dungeon").crit_rate ==
+          33);
+    CHECK(swcore::combat_bonus(swcore::Element::Wind, nullptr, teshar, "Scenario").crit_rate == 0);
 }
 
 TEST_CASE("Team analysis GB12: reference speeds give the reference sequence and CR targets") {
@@ -275,7 +416,7 @@ TEST_CASE("Team analysis GB12: reference speeds give the reference sequence and 
     const auto it = std::find_if(teams.begin(), teams.end(),
                                  [](const auto& team) { return team.id == "gb12_speed_teshar"; });
     REQUIRE(it != teams.end());
-    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/mechanics.json");
+    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/game/combat/mechanics.json");
     swcore::TeamAnalysisInput input;
     input.team = &*it;
     input.data = &loaded().data;
@@ -283,7 +424,7 @@ TEST_CASE("Team analysis GB12: reference speeds give the reference sequence and 
     input.level = loaded().data.level(685);
     input.reference = &loaded().reference;
     input.mechanics = &mechanics;
-    input.manual_speeds = {{"Prilea", 226}, {"Teshar", 167}, {"Konamiya", 167},
+    input.assumed_speeds = {{"Prilea", 226}, {"Teshar", 167}, {"Konamiya", 167},
                            {"Luna", 155},   {"Homunculus", 153}};
     const auto analysis = swcore::analyze_team(input);
     REQUIRE(analysis.valid);
@@ -322,7 +463,7 @@ TEST_CASE("Team analysis GB12: reference speeds give the reference sequence and 
 // Étape 3 : dégâts, pire / meilleur cas, verdict. Étape 4 : optimisation.
 // ---------------------------------------------------------------------------
 
-#include "swcore/team_optimizer.hpp"
+#include "swcore/dungeon/team_optimizer.hpp"
 
 #include <set>
 
@@ -369,9 +510,9 @@ TEST_CASE("Skill formulas: SWARFARM expressions and skill-up bonus") {
 
 TEST_CASE("GB12 damage: worst and best case, counter, survival, what is missing") {
     const auto team = gb12_team();
-    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/mechanics.json");
+    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/game/combat/mechanics.json");
     auto input = gb12_input(team, mechanics);
-    input.manual_speeds = {{"Prilea", 226}, {"Teshar", 167}, {"Konamiya", 167},
+    input.assumed_speeds = {{"Prilea", 226}, {"Teshar", 167}, {"Konamiya", 167},
                            {"Luna", 155},   {"Homunculus", 153}};
     const auto analysis = swcore::analyze_team(input);  // sans box : stats de base
     REQUIRE(analysis.valid);
@@ -402,22 +543,57 @@ TEST_CASE("GB12 damage: worst and best case, counter, survival, what is missing"
     // Meilleur cas : S2, critique.
     CHECK(best.actions[1].skill == 2);
     CHECK(best.actions[1].crit);
-    // Konamiya S2 : ATQ boostée pour la prochaine action de Teshar.
-    CHECK(worst.actions[3].actor == "Teshar");
-    CHECK(worst.actions[3].atk_buff);
+    // Tempest (prête sur le boss, hypothèse de la config) : ligne séparée au même
+    // tic, zone sur le boss et les deux tours ; 3,7 x ATQ x 1,30 x facteur DEF.
+    const auto& tempest = worst.actions[2];
+    CHECK(tempest.extra);
+    CHECK(tempest.actor == "Teshar");
+    CHECK(tempest.tick == worst.actions[1].tick);
+    CHECK(tempest.skill_name == "Tempest");
+    CHECK(worst.actions[1].passive == "+ Tempest");
+    REQUIRE(tempest.targets.size() == 3);
+    const auto teshar = std::find_if(analysis.members.begin(), analysis.members.end(),
+                                     [](const auto& m) { return m.config->name == "Teshar"; });
+    REQUIRE(teshar != analysis.members.end());
+    const double tempest_expected = 3.7 * teshar->combat.attack * 1.30 * 1000.0 /
+                                    (1140.0 + 3.5 * analysis.boss->defense * 0.3);
+    CHECK(std::abs(tempest.damage - tempest_expected) < 1e-6);
+    for (const auto& hit : tempest.targets) {
+        INFO(hit.name);
+        if (hit.boss) {
+            CHECK(hit.stun_text == "insensible au stun");
+            CHECK_FALSE(hit.stun_chance.has_value());
+        } else {
+            CHECK(hit.stun_chance.has_value());
+            CHECK_FALSE(hit.stunned);  // pire cas : résisté
+        }
+        CHECK_FALSE(hit.kills);
+    }
+    CHECK(tempest.boss_hp_after < worst.actions[1].boss_hp_after);
+    CHECK_FALSE(analysis.hypotheses.empty());
+    // Konamiya S2 : ATQ boostée pour la prochaine action de Teshar, sans Tempest (recharge 3).
+    CHECK(worst.actions[4].actor == "Teshar");
+    CHECK(worst.actions[4].atk_buff);
+    CHECK_FALSE(worst.actions[4].extra);
+    CHECK(worst.actions[4].passive.find("Tempest en recharge : 3") != std::string::npos);
+    CHECK_FALSE(worst.actions[5].extra);
     CHECK(best.damage > worst.damage);
+    // Meilleur cas : tours étourdies -> au moins un tour ennemi perdu avant le boss.
+    CHECK(std::any_of(best.atb.turns.begin(), best.atb.turns.end(),
+                      [](const swcore::AtbTurn& turn) { return turn.stunned; }));
+    CHECK_FALSE(best.stun_notes.empty());
 
     // Stats de base : le boss survit ; il manque un facteur > 1 sur ATQ x (1 + DC).
     CHECK_FALSE(worst.kills);
     CHECK(worst.required_factor > 1);
     CHECK_FALSE(analysis.missing.empty());
-    // 7e attaque reçue (Prilea, tour en plus au tic 16) : contre-attaque du Géant.
+    // 7e attaque reçue (Tempest compte) : Luna au tic 14 (IA auto), contre-attaque du Géant.
     REQUIRE(worst.counter.has_value());
-    CHECK(worst.counter->find("Prilea") != std::string::npos);
-    // Survie : une ligne par monstre ; hypothèse inconnue de Teshar signalée.
+    CHECK(worst.counter->find("Luna") != std::string::npos);
+    CHECK(worst.counter->find("t14") != std::string::npos);
+    // Survie : une ligne par monstre ; plus d'hypothèse Tempest dans mechanics.json.
     CHECK(analysis.survival.size() == 5);
-    CHECK(std::find(analysis.unverified.begin(), analysis.unverified.end(),
-                    "per_monster.Teshar.tempest_multiplier") != analysis.unverified.end());
+    CHECK(analysis.unverified.empty());
     // Poids c_i : nukers > 0, Konamiya (sans dégâts) = 0.
     for (const auto& member : analysis.members) {
         if (member.config->name == "Konamiya") CHECK(member.coefficient == 0);
@@ -427,8 +603,8 @@ TEST_CASE("GB12 damage: worst and best case, counter, survival, what is missing"
 }
 
 TEST_CASE("Preset sets become solver scenarios") {
-    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/mapping");
-    const auto effects = swcore::SetEffects::load(kRoot + "/data/mapping/set_effects.json");
+    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/game");
+    const auto effects = swcore::SetEffects::load(kRoot + "/data/game/runes/set_effects.json");
     std::string problem;
     const auto swift =
         swcore::scenario_from_sets({"Swift", "Fight"}, mapping.set_names, effects, &problem);
@@ -451,20 +627,23 @@ TEST_CASE("Preset sets become solver scenarios") {
 
 TEST_CASE("Team optimizer: distinct runes, locked member untouched, constraints kept") {
     const auto team = gb12_team();
-    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/mechanics.json");
-    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/mapping");
-    const auto effects = swcore::SetEffects::load(kRoot + "/data/mapping/set_effects.json");
-    const std::string export_path = kRoot + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+    const auto mechanics = swcore::Mechanics::load(kRoot + "/data/game/combat/mechanics.json");
+    const auto mapping = swcore::RuneMapping::load(kRoot + "/data/game");
+    const auto effects = swcore::SetEffects::load(kRoot + "/data/game/runes/set_effects.json");
+    const std::string export_path = kRoot + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
     auto box = swcore::load_account(export_path, mapping, {});
     for (auto& monster : box) monster.stats = swcore::calculate_monster_stats(monster, effects);
     const auto runes = swcore::load_runes(export_path, mapping, {});
 
+    const auto towers =
+        swcore::load_tower_bonuses(kRoot + "/data/game/account/summoner_skills.json", 20);
     swcore::TeamOptimizerInput input;
     input.analysis = gb12_input(team, mechanics);
+    input.analysis.effects = &effects;
+    input.analysis.towers = &towers;
     input.box = &box;
     input.runes = &runes;
-    input.effects = &effects;
-    input.mapping_directory = kRoot + "/data/mapping";
+    input.mapping_directory = kRoot + "/data/game";
     input.set_names = &mapping.set_names;
     swcore::TeamOptimizerSettings settings;
     settings.sets = team.rune_presets.at("set1");
@@ -475,30 +654,35 @@ TEST_CASE("Team optimizer: distinct runes, locked member untouched, constraints 
     REQUIRE(result.members.size() == 5);
     REQUIRE(result.units.size() == 5);
 
-    // Konamiya verrouillée : même exemplaire, mêmes runes qu'avant.
-    const auto find = [](const std::vector<swcore::AccountMonster>& monsters,
-                         std::uint64_t unit_id) {
-        return std::find_if(monsters.begin(), monsters.end(),
-                            [&](const auto& unit) { return unit.unit_id == unit_id; });
-    };
+    // Konamiya verrouillée : son build est exactement ses runes actuelles.
     const auto konamiya_id = result.units.at("Konamiya");
-    const auto before = find(box, konamiya_id);
-    const auto after = find(result.box, konamiya_id);
+    const auto before = std::find_if(box.begin(), box.end(),
+                                     [&](const auto& unit) { return unit.unit_id == konamiya_id; });
     REQUIRE(before != box.end());
-    REQUIRE(after != result.box.end());
     std::set<std::uint64_t> before_ids;
     std::set<std::uint64_t> after_ids;
     for (const auto& rune : before->runes) before_ids.insert(rune.rune_id);
-    for (const auto& rune : after->runes) after_ids.insert(rune.rune_id);
+    REQUIRE(result.builds.contains("Konamiya"));
+    for (const auto& rune : result.builds.at("Konamiya")) after_ids.insert(rune.rune_id);
     CHECK(before_ids == after_ids);
 
-    // Aucune rune portée par deux membres de la team ; builds conformes aux
-    // contraintes de leur recherche.
+    // Aucune rune dans deux builds candidats ; la box n'est jamais modifiée.
     std::set<std::uint64_t> used;
-    for (const auto& [name, unit_id] : result.units) {
-        const auto unit = find(result.box, unit_id);
-        REQUIRE(unit != result.box.end());
-        for (const auto& rune : unit->runes) CHECK(used.insert(rune.rune_id).second);
+    for (const auto& [name, build] : result.builds)
+        for (const auto& rune : build) CHECK(used.insert(rune.rune_id).second);
+
+    // "Contraintes tenues" = vrai sur la simulation finale, recalculée ici.
+    auto check_input = input.analysis;
+    check_input.box = &box;
+    check_input.builds = result.builds;
+    check_input.pinned_units = result.units;
+    const auto final_analysis = swcore::analyze_team(check_input);
+    REQUIRE(final_analysis.valid);
+    CHECK(result.constraints_ok == final_analysis.constraints_ok);
+    CHECK(result.kills == final_analysis.worst.kills);
+    if (result.constraints_ok) {
+        CHECK(final_analysis.speed_check.ok);  // pas d'égalité, ordre respecté
+        for (const auto& member : final_analysis.members) CHECK(member.crit.satisfied());
     }
     for (const auto& member : result.members) {
         INFO(member.name);

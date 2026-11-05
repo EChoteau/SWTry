@@ -1,8 +1,8 @@
 #include "app.hpp"
 
-#include "text_util.hpp"
+#include "widgets/text_util.hpp"
 
-#include "swcore/build_text.hpp"
+#include "swcore/solver/build_text.hpp"
 
 #include <imgui.h>
 
@@ -69,13 +69,13 @@ void labeled(const char* label, const std::string& value) {
 }  // namespace
 
 App::App(DataStore& data, Settings& settings) : data_(data), settings_(settings) {
-    swcore::text::set_mapping_directory(data_.mapping_directory());
+    swcore::text::set_mapping_directory(data_.game_directory());
     load_craft_tables();
     // La dernière config est restaurée à la réouverture.
     const fs::path last = data_.user_directory() / "configs" / "last.json";
     std::error_code error;
     if (fs::exists(last, error)) {
-        config_ = swcore::SolverConfig::load(last, data_.mapping_directory());
+        config_ = swcore::SolverConfig::load(last, data_.game_directory());
         normalize_config();
     } else {
         reset_config();

@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/craft_audit.hpp"
+#include "swcore/runes/craft_audit.hpp"
 
 #include <string>
 #include <vector>
@@ -33,9 +33,9 @@ swcore::Rune rune(std::uint64_t id, int level, int primary,
 }  // namespace
 
 TEST_CASE("Craft audit checks grinds, gems and gem stat conflicts") {
-    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
-    const auto grindstones = swcore::load_craft_ranges(mapping + "/grindstone.json");
-    const auto gems = swcore::load_craft_ranges(mapping + "/enchanted_gem.json");
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
+    const auto grindstones = swcore::load_craft_ranges(mapping + "/craft/grindstone.json");
+    const auto gems = swcore::load_craft_ranges(mapping + "/craft/enchanted_gem.json");
     REQUIRE(grindstones.contains(8));
     REQUIRE(gems.contains(8));
     const int grind_max = grindstones.at(8).rbegin()->second.second;

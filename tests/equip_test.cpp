@@ -1,9 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/equip.hpp"
-#include "swcore/locks.hpp"
-#include "swcore/solver.hpp"
-#include "swcore/solver_config.hpp"
+#include "swcore/account/equip.hpp"
+#include "swcore/account/locks.hpp"
+#include "swcore/solver/solver.hpp"
+#include "swcore/solver/solver_config.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,7 +16,7 @@ namespace {
 
 constexpr std::uint64_t kA = 100;
 constexpr std::uint64_t kB = 200;
-const std::string kMapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+const std::string kMapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
 
 swcore::Rune rune(std::uint64_t id, int slot, int primary, int value, std::uint64_t owner) {
     swcore::Rune result;

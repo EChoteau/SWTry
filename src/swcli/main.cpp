@@ -1,15 +1,16 @@
-#include "swcore/account.hpp"
-#include "swcore/account_bonuses.hpp"
-#include "swcore/build_text.hpp"
-#include "swcore/craft_audit.hpp"
-#include "swcore/equip.hpp"
+#include "swcore/account/account.hpp"
+#include "swcore/account/account_bonuses.hpp"
+#include "swcore/data_files.hpp"
+#include "swcore/solver/build_text.hpp"
+#include "swcore/runes/craft_audit.hpp"
+#include "swcore/account/equip.hpp"
 #include "swcore/reference_db.hpp"
-#include "swcore/runes.hpp"
-#include "swcore/storage_stacks.hpp"
-#include "swcore/set_effects.hpp"
-#include "swcore/solver_config.hpp"
-#include "swcore/solver.hpp"
-#include "swcore/solve_async.hpp"
+#include "swcore/runes/runes.hpp"
+#include "swcore/account/storage_stacks.hpp"
+#include "swcore/runes/set_effects.hpp"
+#include "swcore/solver/solver_config.hpp"
+#include "swcore/solver/solver.hpp"
+#include "swcore/solver/solve_async.hpp"
 
 #include <algorithm>
 #include <array>
@@ -38,6 +39,11 @@ namespace {
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+namespace files = swcore::data_files;
+
+// Chemins des données, relatifs au dossier courant (racine du projet).
+const fs::path kGameDir = files::game_dir;
+const fs::path kSwarfarmMonsters = fs::path(files::swarfarm_dir) / "monsters.json";
 using namespace swcore::text;  // rendu texte partagé avec swgui
 
 struct Options {
@@ -285,7 +291,7 @@ int print_marginal(const Options& options, swcore::SolverConfig config,
     const auto row = [&](const std::string& label, const swcore::SolverConfig& run) {
         const auto started = std::chrono::steady_clock::now();
         swcore::AsyncSolver async;
-        async.start(target, runes, effects, run, "data/mapping");
+        async.start(target, runes, effects, run, kGameDir);
         const auto solver = async.wait();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - started)
@@ -686,7 +692,7 @@ int run(const Options& options) {
     };
     if (!options.solver_config_path.empty()) {
         auto solver_config = swcore::SolverConfig::load(
-            options.solver_config_path, "data/mapping", warning);
+            options.solver_config_path, kGameDir, warning);
         if (!solver_config.errors.empty()) {
             for (const auto& error : solver_config.errors)
                 std::cerr << "Erreur de configuration : " << error << '\n';
@@ -696,12 +702,12 @@ int run(const Options& options) {
         if (!options.locks_path.empty())
             solver_config.lock_table =
                 swcore::LockTable::load(options.locks_path, warning);
-        const auto mapping = swcore::RuneMapping::load("data/mapping", warning);
+        const auto mapping = swcore::RuneMapping::load(kGameDir, warning);
         const auto reference =
-            swcore::ReferenceDB::load("data/swarfarm/monsters.json", warning);
+            swcore::ReferenceDB::load(kSwarfarmMonsters, warning);
         auto monsters = swcore::load_account(options.export_path, mapping, warning);
         const auto effects = swcore::SetEffects::load(
-            "data/mapping/set_effects.json", warning);
+            kGameDir / files::set_effects, warning);
         auto runes = swcore::load_runes(options.export_path, mapping, warning);
         {
             // État du compte : export, puis équipement virtuel (--equip-actions,
@@ -753,7 +759,7 @@ int run(const Options& options) {
             std::max(solver_config.limits.detailed_builds, show_count);
         // Même API que le GUI : recherche asynchrone, attendue ici.
         swcore::AsyncSolver async;
-        async.start(*target, runes, effects, solver_config, "data/mapping", warning);
+        async.start(*target, runes, effects, solver_config, kGameDir, warning);
         const auto solver = async.wait();
         if (!options.csv_export_path.empty() &&
             !export_builds_csv(options.csv_export_path, solver)) {
@@ -825,12 +831,12 @@ int run(const Options& options) {
         return 0;
     }
     const auto reference = swcore::ReferenceDB::load(
-        "data/swarfarm/monsters.json", warning);
+        kSwarfarmMonsters, warning);
     const auto mapping = swcore::RuneMapping::load(
-        "data/mapping", warning);
+        kGameDir, warning);
     auto monsters = swcore::load_account(options.export_path, mapping, warning);
     const auto set_effects =
-        swcore::SetEffects::load("data/mapping/set_effects.json", warning);
+        swcore::SetEffects::load(kGameDir / files::set_effects, warning);
     for (auto& monster : monsters)
         monster.stats = swcore::calculate_monster_stats(monster, set_effects);
     if (options.check_white) {
@@ -898,9 +904,9 @@ int run(const Options& options) {
     const auto all_runes = swcore::load_runes(options.export_path, mapping, warning);
     if (options.audit_craft) {
         const auto grindstones =
-            swcore::load_craft_ranges("data/mapping/grindstone.json", warning);
+            swcore::load_craft_ranges(kGameDir / files::grindstone, warning);
         const auto gems =
-            swcore::load_craft_ranges("data/mapping/enchanted_gem.json", warning);
+            swcore::load_craft_ranges(kGameDir / files::enchanted_gem, warning);
         print_craft_audit(std::cout, swcore::audit_craft(all_runes, grindstones, gems),
                           mapping);
         std::cout << std::flush;
@@ -909,17 +915,17 @@ int run(const Options& options) {
     }
     const auto craft_items = swcore::load_craft_items(options.export_path, warning);
     const auto account_bonuses = swcore::AccountBonuses::load(
-        options.export_path, "data/mapping/account_bonuses.json", warning);
+        options.export_path, kGameDir / files::account_bonuses, warning);
     const auto artifact_effect_labels =
-        load_id_names("data/i18n/en.json", warning);
+        load_id_names(files::i18n_en, warning);
     const auto artifact_main_effects = artifact_effect_labels;
     const auto artifact_sub_effects = artifact_effect_labels;
     const auto artifact_types =
-        load_id_names("data/mapping/artifact_types.json", warning);
+        load_id_names(kGameDir / files::artifact_types, warning);
     const auto artifact_attributes =
-        load_id_names("data/mapping/monster_attributes.json", warning);
+        load_id_names(kGameDir / files::monster_attributes, warning);
     const auto artifact_ranks =
-        load_id_names("data/mapping/artifact_rank.json", warning);
+        load_id_names(kGameDir / files::artifact_rank, warning);
 
     swcore::StorageStacks storage;
     if (!options.storage_path.empty())

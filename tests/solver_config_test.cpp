@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/solver_config.hpp"
+#include "swcore/solver/solver_config.hpp"
 
 #include <string>
 #include <vector>
@@ -24,8 +24,8 @@ TEST_CASE("Scenario name is generated from its sets unless one was typed") {
 TEST_CASE("Solver configuration loads pool scenarios and validated options") {
     std::vector<std::string> warnings;
     const auto config = swcore::SolverConfig::load(
-        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/solver_config.json",
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping",
+        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/solver_configs/solver_config.json",
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     CHECK(config.pool.minimum_rune_level == 12);
@@ -49,8 +49,8 @@ namespace {
 swcore::SolverConfig load_test_config(const std::string& file,
                                       std::vector<std::string>& warnings) {
     return swcore::SolverConfig::load(
-        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/" + file,
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping",
+        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/solver_configs/" + file,
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game",
         [&](const std::string& warning) { warnings.push_back(warning); });
 }
 

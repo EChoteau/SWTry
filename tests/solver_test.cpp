@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/account.hpp"
-#include "swcore/solver.hpp"
+#include "swcore/account/account.hpp"
+#include "swcore/solver/solver.hpp"
 
 #include <algorithm>
 #include <array>
@@ -55,7 +55,7 @@ TEST_CASE("Solver finds the only build and retains rune origins") {
 
     const auto report = swcore::solve_runes(
         target, pool, {}, config,
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping");
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game");
 
     REQUIRE(report.scenarios.size() == 1);
     REQUIRE(report.scenarios[0].builds.size() == 1);
@@ -78,7 +78,7 @@ TEST_CASE("Solver returns no build for impossible constraints") {
 
     const auto report = swcore::solve_runes(
         target, pool, {}, config,
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping");
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game");
     REQUIRE(report.scenarios.size() == 1);
     CHECK(report.scenarios[0].builds.empty());
     CHECK(report.limiting_constraints.size() == 1);
@@ -97,14 +97,14 @@ TEST_CASE("Derived solver metrics use the configured formulas") {
 TEST_CASE("Raoq solver configuration finds constrained builds in all scenarios") {
     const std::string export_path =
         std::string{SW_PROJECT_SOURCE_DIR} +
-        "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+        "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
     const std::string mapping_path =
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
 
     std::vector<std::string> warnings;
     const auto config = swcore::SolverConfig::load(
         std::string{SW_PROJECT_SOURCE_DIR} +
-            "/tests/data/solver_raoq_config.json",
+            "/tests/data/solver_configs/solver_raoq_config.json",
         mapping_path,
         [&](const std::string& warning) { warnings.push_back(warning); });
     const auto rune_mapping = swcore::RuneMapping::load(mapping_path);
@@ -115,7 +115,7 @@ TEST_CASE("Raoq solver configuration finds constrained builds in all scenarios")
         export_path, rune_mapping,
         [&](const std::string& warning) { warnings.push_back(warning); });
     const auto set_effects = swcore::SetEffects::load(
-        mapping_path + "/set_effects.json",
+        mapping_path + "/runes/set_effects.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     const auto target = std::find_if(
@@ -238,17 +238,17 @@ std::optional<double> brute_force_best(
 TEST_CASE("Solver pruning matches an exhaustive search on a small pool") {
     const std::string root{SW_PROJECT_SOURCE_DIR};
     const std::string export_path =
-        root + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
-    const std::string mapping_path = root + "/data/mapping";
+        root + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
+    const std::string mapping_path = root + "/data/game";
     const auto ignore = [](const std::string&) {};
 
     auto config = swcore::SolverConfig::load(
-        root + "/tests/data/solver_raoq_config.json", mapping_path, ignore);
+        root + "/tests/data/solver_configs/solver_raoq_config.json", mapping_path, ignore);
     const auto rune_mapping = swcore::RuneMapping::load(mapping_path);
     const auto account = swcore::load_account(export_path, rune_mapping, ignore);
     const auto all_runes = swcore::load_runes(export_path, rune_mapping, ignore);
     const auto effects =
-        swcore::SetEffects::load(mapping_path + "/set_effects.json", ignore);
+        swcore::SetEffects::load(mapping_path + "/runes/set_effects.json", ignore);
     const auto target = std::find_if(
         account.begin(), account.end(), [&](const swcore::AccountMonster& m) {
             return m.unit_id == *config.pool.target_unit_id;
@@ -326,19 +326,19 @@ namespace {
 
 struct RaoqFixture {
     std::string root{SW_PROJECT_SOURCE_DIR};
-    std::string mapping_path = root + "/data/mapping";
+    std::string mapping_path = root + "/data/game";
     std::string export_path =
-        root + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+        root + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
     swcore::RuneMapping rune_mapping = swcore::RuneMapping::load(mapping_path);
     std::vector<swcore::AccountMonster> account =
         swcore::load_account(export_path, rune_mapping, [](const std::string&) {});
     std::vector<swcore::Rune> runes =
         swcore::load_runes(export_path, rune_mapping, [](const std::string&) {});
     swcore::SetEffects effects = swcore::SetEffects::load(
-        mapping_path + "/set_effects.json", [](const std::string&) {});
+        mapping_path + "/runes/set_effects.json", [](const std::string&) {});
 
     swcore::SolverConfig config(const std::string& file) const {
-        return swcore::SolverConfig::load(root + "/tests/data/" + file, mapping_path,
+        return swcore::SolverConfig::load(root + "/tests/data/solver_configs/" + file, mapping_path,
                                           [](const std::string&) {});
     }
     const swcore::AccountMonster& target(const swcore::SolverConfig& config) const {
@@ -492,7 +492,7 @@ TEST_CASE("A +12 rune is shown as +12 and computed with its +15 main stat") {
     config.scenarios.push_back({"Six", {{17, 6}}, false});
     config.objective.weights["attack"] = 1;
     config.limits.top_n = 1;
-    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
 
     config.pool.projection_level = swcore::kProjectionCurrent;
     const auto current = swcore::solve_runes(target, pool, {}, config, mapping);
@@ -712,7 +712,7 @@ TEST_CASE("Simulated grindstones match a brute force (full grind or capped subse
     base.objective.weights["speed"] = 3;
     base.limits.top_n = 1;
     base.limits.max_builds_per_scenario = 1;
-    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
 
     struct Case {
         const char* name;
@@ -935,7 +935,7 @@ TEST_CASE("Simulated gems and grindstones match a brute force") {
     base.objective.weights["speed"] = 5;
     base.limits.top_n = 1;
     base.limits.max_builds_per_scenario = 1;
-    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
 
     struct Case {
         const char* name;
@@ -1041,7 +1041,7 @@ TEST_CASE("One row per rune combination: best variant kept, before top_n") {
     config.gems[4] = {swcore::GrindstoneMode::Max, 5, 0};
     config.gems[9] = {swcore::GrindstoneMode::Exact, 5, 7};
     config.scenarios = {swcore::SetScenario{"Six", {{17, 6}}, false}};
-    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
 
     // Force brute : meilleur score de chaque combinaison de 6 runes physiques.
     std::array<std::vector<CraftVariant>, 6> by_slot;
@@ -1213,7 +1213,7 @@ TEST_CASE("Build efficiency is a real search metric (constraint and weight)") {
         return best;
     };
 
-    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping";
+    const std::string mapping = std::string{SW_PROJECT_SOURCE_DIR} + "/data/game";
     struct Case {
         const char* name;
         std::optional<double> min_efficiency;

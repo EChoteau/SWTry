@@ -3,17 +3,17 @@
 #include <string>
 #include <vector>
 
-#include "swcore/account.hpp"
+#include "swcore/account/account.hpp"
 #include "swcore/reference_db.hpp"
 
 TEST_CASE("Account monster without runes matches ReferenceDB max-level stats") {
     std::vector<std::string> warnings;
     const auto account = swcore::load_account(
-        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/account_monster.json",
+        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/exports/account_monster.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
     const auto reference = swcore::ReferenceDB::load(
         std::string{SW_PROJECT_SOURCE_DIR} +
-            "/tests/data/reference_monsters.json");
+            "/tests/data/reference/reference_monsters.json");
 
     REQUIRE(account.size() == 1);
     const auto* monster = reference.find(22901);
@@ -32,7 +32,7 @@ TEST_CASE("Account equipment is stably ordered by slot") {
     std::vector<std::string> warnings;
     const auto account = swcore::load_account(
         std::string{SW_PROJECT_SOURCE_DIR} +
-            "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json",
+            "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     REQUIRE_FALSE(account.empty());

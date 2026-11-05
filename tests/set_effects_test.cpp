@@ -1,14 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/set_effects.hpp"
-#include "swcore/runes.hpp"
+#include "swcore/runes/set_effects.hpp"
+#include "swcore/runes/runes.hpp"
 
 #include <string>
 
 TEST_CASE("Set effects load confirmed personal and team bonuses") {
     std::vector<std::string> warnings;
     const auto effects = swcore::SetEffects::load(
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping/set_effects.json",
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game/runes/set_effects.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     REQUIRE(effects.effects.contains(8));
@@ -34,7 +34,7 @@ TEST_CASE("Stat percentage bonuses use ceiling on white stats") {
 
 TEST_CASE("Rune mapping classifies HP ATK and DEF percentage IDs") {
     const auto mapping = swcore::RuneMapping::load(
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping");
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game");
     CHECK(mapping.kind_for_stat(1) == swcore::StatValueKind::Flat);
     CHECK(mapping.kind_for_stat(2) == swcore::StatValueKind::Percent);
     CHECK(mapping.kind_for_stat(3) == swcore::StatValueKind::Flat);
@@ -76,7 +76,7 @@ TEST_CASE("Percentage speed bonuses are calculated from white speed") {
 
 TEST_CASE("Set activation counts complete pieces and ignores incomplete sets") {
     const auto effects = swcore::SetEffects::load(
-        std::string{SW_PROJECT_SOURCE_DIR} + "/data/mapping/set_effects.json");
+        std::string{SW_PROJECT_SOURCE_DIR} + "/data/game/runes/set_effects.json");
     const auto activations = swcore::calculate_set_activations(
         {8, 8, 8, 8, 8, 19, 19, 25}, effects);
 

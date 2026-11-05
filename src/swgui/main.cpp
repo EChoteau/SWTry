@@ -4,12 +4,12 @@
 //   swgui --exit-after-frames N  ouvre la fenêtre, rend N images, quitte
 
 #include "app.hpp"
-#include "data_store.hpp"
-#include "settings.hpp"
-#include "text_util.hpp"
+#include "store/data_store.hpp"
+#include "store/settings.hpp"
+#include "widgets/text_util.hpp"
 
-#include "swcore/solve_async.hpp"
-#include "swcore/solver_config.hpp"
+#include "swcore/solver/solve_async.hpp"
+#include "swcore/solver/solver_config.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -54,12 +54,12 @@ int run_selftest() {
     constexpr double kExpectedScore = 3084;
     swgui::DataStore data(swgui::find_data_root());
     const fs::path tests = data.root() / "tests" / "data";
-    if (!data.load_export(tests / "Qui-Gon-21196058-2026-11-02_001212.json")) {
+    if (!data.load_export(tests / "exports" / "Qui-Gon-21196058-2026-11-02_001212.json")) {
         std::printf("selftest: export illisible : %s\n", data.export_file.error.c_str());
         return 2;
     }
-    const auto config = swcore::SolverConfig::load(tests / "solver_raoq_atk_test.json",
-                                                   data.mapping_directory());
+    const auto config = swcore::SolverConfig::load(
+        tests / "solver_configs" / "solver_raoq_atk_test.json", data.game_directory());
     if (!config.pool.target_unit_id) {
         std::printf("selftest: config sans monstre cible\n");
         return 2;
@@ -74,7 +74,7 @@ int run_selftest() {
         return 2;
     }
     swcore::AsyncSolver solver;
-    solver.start(*target, data.runes, data.effects, config, data.mapping_directory());
+    solver.start(*target, data.runes, data.effects, config, data.game_directory());
     while (solver.snapshot().running)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     const auto report = solver.wait();

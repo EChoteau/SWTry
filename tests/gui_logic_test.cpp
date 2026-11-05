@@ -3,13 +3,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "gui_logic.hpp"
-#include "monster_view.hpp"
-#include "snapshot.hpp"
+#include "logic/gui_logic.hpp"
+#include "logic/monster_view.hpp"
+#include "logic/snapshot.hpp"
 
-#include "swcore/account.hpp"
-#include "swcore/solver.hpp"
-#include "swcore/solver_config.hpp"
+#include "swcore/account/account.hpp"
+#include "swcore/solver/solver.hpp"
+#include "swcore/solver/solver_config.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -19,12 +19,12 @@
 namespace {
 
 const std::string kRoot{SW_PROJECT_SOURCE_DIR};
-const std::string kMapping = kRoot + "/data/mapping";
-const std::string kExport = kRoot + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+const std::string kMapping = kRoot + "/data/game";
+const std::string kExport = kRoot + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
 
 struct Data {
     swcore::RuneMapping mapping = swcore::RuneMapping::load(kMapping);
-    swcore::SetEffects effects = swcore::SetEffects::load(kMapping + "/set_effects.json");
+    swcore::SetEffects effects = swcore::SetEffects::load(kMapping + "/runes/set_effects.json");
     std::vector<swcore::AccountMonster> monsters = load();
     std::vector<swcore::Rune> runes = swcore::load_runes(kExport, mapping, {});
 
@@ -97,7 +97,7 @@ TEST_CASE("Saved build snapshot: runes and monsters round trip exactly") {
 TEST_CASE("Candidate counts with grindstones and gems enabled stay fast", "[timing]") {
     const Data data;
     const auto config = swcore::SolverConfig::load(
-        kRoot + "/tests/data/solver_raoq_atk_craft.json", kMapping);
+        kRoot + "/tests/data/solver_configs/solver_raoq_atk_craft.json", kMapping);
     const auto started = std::chrono::steady_clock::now();
     const auto counts = swcore::count_candidate_runes(data.runes, config);
     const auto elapsed = std::chrono::duration<double, std::milli>(

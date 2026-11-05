@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/account.hpp"
-#include "swcore/solve_async.hpp"
-#include "swcore/solver_config.hpp"
+#include "swcore/account/account.hpp"
+#include "swcore/solver/solve_async.hpp"
+#include "swcore/solver/solver_config.hpp"
 
 #include <algorithm>
 #include <string>
@@ -11,7 +11,7 @@
 namespace {
 
 const std::string kRoot{SW_PROJECT_SOURCE_DIR};
-const std::string kMapping = kRoot + "/data/mapping";
+const std::string kMapping = kRoot + "/data/game";
 
 swcore::SolverConfig reparse(const swcore::SolverConfig& config,
                              std::vector<std::string>& warnings) {
@@ -81,7 +81,7 @@ TEST_CASE("Solver config JSON round trip: test configs read by the CLI") {
         INFO(file);
         std::vector<std::string> ignored;
         const auto loaded = swcore::SolverConfig::load(
-            kRoot + "/tests/data/" + file, kMapping,
+            kRoot + "/tests/data/solver_configs/" + file, kMapping,
             [&](const std::string& warning) { ignored.push_back(warning); });
         std::vector<std::string> warnings;
         const auto back = reparse(loaded, warnings);
@@ -93,12 +93,12 @@ TEST_CASE("Solver config JSON round trip: test configs read by the CLI") {
 TEST_CASE("Async solver gives the synchronous result and can be cancelled") {
     const auto mapping = swcore::RuneMapping::load(kMapping);
     const std::string export_path =
-        kRoot + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+        kRoot + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
     const auto account = swcore::load_account(export_path, mapping, {});
     const auto runes = swcore::load_runes(export_path, mapping, {});
-    const auto effects = swcore::SetEffects::load(kMapping + "/set_effects.json");
+    const auto effects = swcore::SetEffects::load(kMapping + "/runes/set_effects.json");
     const auto config =
-        swcore::SolverConfig::load(kRoot + "/tests/data/solver_raoq_atk_test.json",
+        swcore::SolverConfig::load(kRoot + "/tests/data/solver_configs/solver_raoq_atk_test.json",
                                    kMapping);
     const auto target = std::find_if(
         account.begin(), account.end(), [&](const swcore::AccountMonster& m) {
@@ -135,14 +135,14 @@ TEST_CASE("Async solver gives the synchronous result and can be cancelled") {
 TEST_CASE("GUI helpers: candidate counts and expanded builds match the solver") {
     const auto mapping = swcore::RuneMapping::load(kMapping);
     const std::string export_path =
-        kRoot + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+        kRoot + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
     const auto account = swcore::load_account(export_path, mapping, {});
     const auto runes = swcore::load_runes(export_path, mapping, {});
-    const auto effects = swcore::SetEffects::load(kMapping + "/set_effects.json");
+    const auto effects = swcore::SetEffects::load(kMapping + "/runes/set_effects.json");
     for (const char* file : {"solver_raoq_atk_test.json", "solver_raoq_atk_craft.json"}) {
         INFO(file);
         auto config =
-            swcore::SolverConfig::load(kRoot + "/tests/data/" + file, kMapping);
+            swcore::SolverConfig::load(kRoot + "/tests/data/solver_configs/" + file, kMapping);
         config.limits.top_n = 5;
         const auto target = std::find_if(
             account.begin(), account.end(), [&](const swcore::AccountMonster& m) {

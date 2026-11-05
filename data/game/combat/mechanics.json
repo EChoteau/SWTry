@@ -1,0 +1,16 @@
+{
+  "tick_atb_percent": 7.0,
+  "def_formula": { "a": 1000, "b": 1140, "c": 3.5 },
+  "def_break_percent": 70,
+  "atk_buff_percent": 50,
+  "atk_buff_on": "base",
+  "element_advantage_crit_rate": 15,
+  "element_advantage_damage_bonus": 0,
+  "max_hp_damage_vs_boss": "full",
+  "tie_break": "config_order",
+  "boss_counter_after_attacks": 7,
+  "fend_off_counts_passive_extra_attack": true,
+  "boss_immune_to_stun": true,
+  "resist_floor_percent": 15,
+  "combat_speed_rounding": "ceil"
+}

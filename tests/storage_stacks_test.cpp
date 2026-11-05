@@ -3,13 +3,13 @@
 #include <string>
 #include <vector>
 
-#include "swcore/storage_stacks.hpp"
+#include "swcore/account/storage_stacks.hpp"
 
 TEST_CASE("StorageStacks preserves sealed monster stacks") {
     std::vector<std::string> warnings;
     const auto storage = swcore::StorageStacks::load(
         std::string{SW_PROJECT_SOURCE_DIR} +
-            "/tests/data/storage-1793574749027.json",
+            "/tests/data/exports/storage-1793574749027.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     REQUIRE(warnings.empty());
@@ -24,7 +24,7 @@ TEST_CASE("StorageStacks skips malformed entries with warnings") {
     std::vector<std::string> warnings;
     const auto storage = swcore::StorageStacks::load(
         std::string{SW_PROJECT_SOURCE_DIR} +
-            "/tests/data/storage_stacks_invalid.json",
+            "/tests/data/exports/storage_stacks_invalid.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     REQUIRE(storage.stacks().size() == 2);

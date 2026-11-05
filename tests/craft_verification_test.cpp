@@ -3,9 +3,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "swcore/account.hpp"
-#include "swcore/craft_audit.hpp"
-#include "swcore/solver.hpp"
+#include "swcore/account/account.hpp"
+#include "swcore/runes/craft_audit.hpp"
+#include "swcore/solver/solver.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,8 +17,8 @@
 namespace {
 
 const std::string kRoot{SW_PROJECT_SOURCE_DIR};
-const std::string kMapping = kRoot + "/data/mapping";
-const std::string kExport = kRoot + "/tests/data/Qui-Gon-21196058-2026-11-02_001212.json";
+const std::string kMapping = kRoot + "/data/game";
+const std::string kExport = kRoot + "/tests/data/exports/Qui-Gon-21196058-2026-11-02_001212.json";
 
 void ignore(const std::string&) {}
 
@@ -106,7 +106,7 @@ TEST_CASE("A1 grindstone roll modes on a real rune", "[craft-proof]") {
 
 TEST_CASE("A2 grindstone rarity per stat, values from grindstone.json", "[craft-proof]") {
     using swcore::GrindstoneMode;
-    const auto ranges = swcore::load_craft_ranges(kMapping + "/grindstone.json");
+    const auto ranges = swcore::load_craft_ranges(kMapping + "/craft/grindstone.json");
     const auto hero = variants(grind(4, GrindstoneMode::Max, 4));
     const auto legend = variants(grind(4, GrindstoneMode::Max, 5));
     show("A2 ATQ% max rarete 4 (Hero)", hero);
@@ -125,7 +125,7 @@ TEST_CASE("A3 only listed or grindable stats; never main, innate or 9-12",
           "[craft-proof]") {
     std::vector<std::string> warnings;
     const auto config = swcore::SolverConfig::load(
-        kRoot + "/tests/data/solver_grind_default.json", kMapping,
+        kRoot + "/tests/data/solver_configs/solver_grind_default.json", kMapping,
         [&](const std::string& w) { warnings.push_back(w); });
     const auto all = variants(config);
     show("A3 default seul (toutes les meulables)", all);
@@ -172,7 +172,7 @@ TEST_CASE("B1 gem roll modes on the enchanted line of a real rune", "[craft-proo
 
 TEST_CASE("B2 gem rarity per stat, values from enchanted_gem.json", "[craft-proof]") {
     using swcore::GrindstoneMode;
-    const auto ranges = swcore::load_craft_ranges(kMapping + "/enchanted_gem.json");
+    const auto ranges = swcore::load_craft_ranges(kMapping + "/craft/enchanted_gem.json");
     const auto hero = variants(gem(4, GrindstoneMode::Max, 4));
     const auto legend = variants(gem(4, GrindstoneMode::Max, 5));
     REQUIRE(hero.size() == 2);
@@ -239,9 +239,9 @@ struct Raoq {
         swcore::load_account(kExport, mapping, ignore);
     std::vector<swcore::Rune> runes = swcore::load_runes(kExport, mapping, ignore);
     swcore::SetEffects effects =
-        swcore::SetEffects::load(kMapping + "/set_effects.json", ignore);
+        swcore::SetEffects::load(kMapping + "/runes/set_effects.json", ignore);
     swcore::SolverConfig config(const std::string& file) const {
-        return swcore::SolverConfig::load(kRoot + "/tests/data/" + file, kMapping,
+        return swcore::SolverConfig::load(kRoot + "/tests/data/solver_configs/" + file, kMapping,
                                           ignore);
     }
     swcore::SolverReport solve(const swcore::SolverConfig& config) const {

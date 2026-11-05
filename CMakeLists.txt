@@ -35,23 +35,28 @@ endif()
 add_library(swcore STATIC
     src/swcore/swcore.cpp
     src/swcore/reference_db.cpp
-    src/swcore/storage_stacks.cpp
-    src/swcore/runes.cpp
-    src/swcore/set_effects.cpp
-    src/swcore/solver_config.cpp
-    src/swcore/solver.cpp
-    src/swcore/account.cpp
-    src/swcore/account_bonuses.cpp
-    src/swcore/craft_audit.cpp
-    src/swcore/solve_async.cpp
-    src/swcore/build_text.cpp
-    src/swcore/locks.cpp
-    src/swcore/equip.cpp
-    src/swcore/dungeon.cpp
-    src/swcore/team_config.cpp
-    src/swcore/atb.cpp
-    src/swcore/team_analysis.cpp
-    src/swcore/team_optimizer.cpp)
+    # Compte : export SWEX, stockage, verrous, équipement virtuel, bonus
+    src/swcore/account/account.cpp
+    src/swcore/account/account_bonuses.cpp
+    src/swcore/account/storage_stacks.cpp
+    src/swcore/account/locks.cpp
+    src/swcore/account/equip.cpp
+    src/swcore/account/tower_bonuses.cpp
+    # Runes : mapping, effets de set, craft
+    src/swcore/runes/runes.cpp
+    src/swcore/runes/set_effects.cpp
+    src/swcore/runes/craft_audit.cpp
+    # Solveur de runes
+    src/swcore/solver/solver_config.cpp
+    src/swcore/solver/solver.cpp
+    src/swcore/solver/solve_async.cpp
+    src/swcore/solver/build_text.cpp
+    # Donjons : données, teams, ATB, analyse, optimisation
+    src/swcore/dungeon/dungeon.cpp
+    src/swcore/dungeon/team_config.cpp
+    src/swcore/dungeon/atb.cpp
+    src/swcore/dungeon/team_analysis.cpp
+    src/swcore/dungeon/team_optimizer.cpp)
 target_include_directories(swcore
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(swcore
@@ -107,23 +112,28 @@ if(SW_BUILD_GUI)
     add_executable(swgui
         src/swgui/main.cpp
         src/swgui/app.cpp
-        src/swgui/data_store.cpp
-        src/swgui/settings.cpp
-        src/swgui/text_util.cpp
-        src/swgui/gui_common.cpp
-        src/swgui/app_monsters.cpp
-        src/swgui/app_optimizer.cpp
-        src/swgui/app_results.cpp
-        src/swgui/app_builds.cpp
-        src/swgui/app_workspace.cpp
-        src/swgui/gui_components.cpp
-        src/swgui/monster_view.cpp
-        src/swgui/snapshot.cpp
-        src/swgui/app_locks.cpp
-        src/swgui/app_equip.cpp
-        src/swgui/gui_logic.cpp
-        src/swgui/app_dungeons.cpp
-        src/swgui/app_teams.cpp)
+        # Données chargées et réglages
+        src/swgui/store/data_store.cpp
+        src/swgui/store/settings.cpp
+        # Logique sans ImGui (testée)
+        src/swgui/logic/gui_logic.cpp
+        src/swgui/logic/monster_view.cpp
+        src/swgui/logic/snapshot.cpp
+        # Briques d'affichage
+        src/swgui/widgets/gui_common.cpp
+        src/swgui/widgets/gui_components.cpp
+        src/swgui/widgets/text_util.cpp
+        # Pages
+        src/swgui/pages/app_monsters.cpp
+        src/swgui/pages/app_optimizer.cpp
+        src/swgui/pages/app_results.cpp
+        src/swgui/pages/app_builds.cpp
+        src/swgui/pages/app_workspace.cpp
+        src/swgui/pages/app_locks.cpp
+        src/swgui/pages/app_equip.cpp
+        src/swgui/pages/app_dungeons.cpp
+        src/swgui/pages/app_teams.cpp)
+    target_include_directories(swgui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swgui)
     target_include_directories(swgui SYSTEM PRIVATE ${pfd_SOURCE_DIR})
     target_link_libraries(swgui PRIVATE swcore imgui project_warnings)
     if(WIN32)
@@ -161,9 +171,9 @@ if(SW_BUILD_TESTS)
         tests/locks_test.cpp
         tests/equip_test.cpp
         tests/dungeon_test.cpp
-        src/swgui/monster_view.cpp
-        src/swgui/snapshot.cpp
-        src/swgui/gui_logic.cpp)
+        src/swgui/logic/monster_view.cpp
+        src/swgui/logic/snapshot.cpp
+        src/swgui/logic/gui_logic.cpp)
     target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/swgui)
     target_compile_definitions(tests PRIVATE
         SW_PROJECT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

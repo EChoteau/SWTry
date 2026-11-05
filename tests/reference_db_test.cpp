@@ -8,7 +8,7 @@
 TEST_CASE("ReferenceDB indexes monsters by com2us_id") {
     std::vector<std::string> warnings;
     const auto database = swcore::ReferenceDB::load(
-        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/reference_monsters.json",
+        std::string{SW_PROJECT_SOURCE_DIR} + "/tests/data/reference/reference_monsters.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     REQUIRE(database.size() == 2);
@@ -25,7 +25,7 @@ TEST_CASE("ReferenceDB warns and defaults missing fields") {
     std::vector<std::string> warnings;
     const auto database = swcore::ReferenceDB::load(
         std::string{SW_PROJECT_SOURCE_DIR} +
-            "/tests/data/reference_monsters_missing.json",
+            "/tests/data/reference/reference_monsters_missing.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     REQUIRE(database.find(321) != nullptr);
@@ -39,7 +39,7 @@ TEST_CASE("ReferenceDB treats null SWARFARM stats as absent without warnings") {
     std::vector<std::string> warnings;
     const auto database = swcore::ReferenceDB::load(
         std::string{SW_PROJECT_SOURCE_DIR} +
-            "/tests/data/reference_monsters_null_stats.json",
+            "/tests/data/reference/reference_monsters_null_stats.json",
         [&](const std::string& warning) { warnings.push_back(warning); });
 
     REQUIRE(database.size() == 2);
